@@ -10,6 +10,9 @@ env/
 dist/
 build/
 
+# Environment
+.env
+
 # Uploads
 uploads/
 

@@ -1,11 +1,11 @@
 """
 OR-Tools CP-SAT Constraint Solver for WFM Schedule Generation.
 
-Constraints (from Regulation sheet):
-1. Max 6 consecutive working days (ideal: 5 work + 2 off)
-2. Consistent shift patterns (avoid shift jumping)
-3. Max 2 consecutive days off
-4. Night-shift restrictions for female agents
+Constraints are dynamically parsed from the Regulation sheet using GPT.
+Supported constraint types: max_consecutive_work_days, max_consecutive_off_days,
+no_shift_jumping, gender_shift_restriction, max_shifts_per_week, min_off_days_per_week.
+
+Falls back to 4 hardcoded defaults if GPT is unavailable.
 
 Objective: Minimize gap between forecast staffing needs and scheduled coverage.
 """
@@ -73,8 +73,13 @@ class ScheduleSolver:
         
         return relevant_shifts
     
-    def build_model(self):
-        """Build the complete CP-SAT model."""
+    def build_model(self, parsed_rules=None):
+        """Build the complete CP-SAT model.
+        
+        Args:
+            parsed_rules: List of ParsedRule objects from the LLM rule engine.
+                          If None, falls back to hardcoded default constraints.
+        """
         num_agents = len(self.data.agents)
         num_days = len(self.data.dates)
         num_shifts = len(self.working_shifts)
@@ -89,13 +94,60 @@ class ScheduleSolver:
         
         # --- Apply hard constraints ---
         self._add_leave_constraints()
-        self._add_max_consecutive_work_days(max_days=6)
-        self._add_max_consecutive_off_days(max_days=2)
-        self._add_shift_consistency_constraints()
-        self._add_night_shift_female_restriction()
+        
+        if parsed_rules:
+            self._apply_dynamic_rules(parsed_rules)
+        else:
+            # Fallback to hardcoded defaults
+            self._add_max_consecutive_work_days(max_days=6)
+            self._add_max_consecutive_off_days(max_days=2)
+            self._add_shift_consistency_constraints()
+            self._add_night_shift_female_restriction()
         
         # --- Staffing coverage objective ---
         self._add_coverage_objective()
+    
+    def _apply_dynamic_rules(self, parsed_rules):
+        """Dispatch each parsed rule to the corresponding constraint method."""
+        rule_dispatch = {
+            'max_consecutive_work_days': lambda r: self._add_max_consecutive_work_days(
+                max_days=r.params.get('limit', 6)
+            ),
+            'max_consecutive_off_days': lambda r: self._add_max_consecutive_off_days(
+                max_days=r.params.get('limit', 2)
+            ),
+            'no_shift_jumping': lambda r: self._add_shift_consistency_constraints(),
+            'gender_shift_restriction': lambda r: self._add_night_shift_female_restriction(
+                gender=r.params.get('gender', 'F'),
+                shift_period=r.params.get('shift_period', 'night')
+            ),
+            'max_shifts_per_week': lambda r: self._add_max_shifts_per_week(
+                shift_period=r.params.get('shift_period', 'night'),
+                limit=r.params.get('limit', 3)
+            ),
+            'min_off_days_per_week': lambda r: self._add_min_off_days_per_week(
+                limit=r.params.get('limit', 1)
+            ),
+        }
+        
+        applied = 0
+        for rule in parsed_rules:
+            if not rule.enforceable:
+                print(f"  ⓘ Skipping (display-only): {rule.original_text}")
+                continue
+            
+            handler = rule_dispatch.get(rule.type)
+            if handler:
+                try:
+                    handler(rule)
+                    applied += 1
+                    print(f"  ✓ Applied: {rule.type} — {rule.original_text}")
+                except Exception as e:
+                    print(f"  ✗ Failed to apply {rule.type}: {e}")
+            else:
+                print(f"  ⓘ Unknown rule type: {rule.type} — {rule.original_text}")
+        
+        print(f"Applied {applied}/{len(parsed_rules)} regulation constraints")
     
     def _add_leave_constraints(self):
         """Lock in leave/off requests from the tracker, and block Leave/Resign for everyone else."""
@@ -297,29 +349,91 @@ class ScheduleSolver:
                     self.schedule_vars[(a, d + 1)] == shift_20_idx
                 ).OnlyEnforceIf(both2)
     
-    def _add_night_shift_female_restriction(self):
+    def _add_night_shift_female_restriction(self, gender: str = 'F', shift_period: str = 'night'):
         """
-        Regulation 4: Night-shift restriction for female agents.
-        Female agents should not be assigned to shifts starting at 20:00 or later.
+        Gender-based shift restriction.
+        By default: Female agents should not be assigned to shifts starting at 20:00 or later.
         """
-        shift_20_idx = None
+        # Map shift_period to hour
+        period_hour_map = {'night': 20, 'morning': 3, 'evening': 20}
+        target_hour = period_hour_map.get(shift_period, 20)
+        
+        target_shift_idx = None
         for code, idx in self.shift_indices.items():
             shift_info = self.data.shift_codes.get(code)
-            if shift_info and shift_info.start_time and shift_info.start_time.hour == 20:
-                shift_20_idx = idx
+            if shift_info and shift_info.start_time and shift_info.start_time.hour == target_hour:
+                target_shift_idx = idx
                 break
         
-        if shift_20_idx is None:
+        if target_shift_idx is None:
             return
         
         num_days = len(self.data.dates)
         
         for a, agent in enumerate(self.data.agents):
-            if agent.gender == 'F':
+            if agent.gender == gender:
                 for d in range(num_days):
                     self.model.Add(
-                        self.schedule_vars[(a, d)] != shift_20_idx
+                        self.schedule_vars[(a, d)] != target_shift_idx
                     )
+    
+    def _add_max_shifts_per_week(self, shift_period: str = 'night', limit: int = 3):
+        """
+        Limit how many times a specific shift type can be assigned per 7-day window.
+        """
+        period_hour_map = {'night': 20, 'morning': 3, 'evening': 20}
+        target_hour = period_hour_map.get(shift_period, 20)
+        
+        target_shift_idx = None
+        for code, idx in self.shift_indices.items():
+            shift_info = self.data.shift_codes.get(code)
+            if shift_info and shift_info.start_time and shift_info.start_time.hour == target_hour:
+                target_shift_idx = idx
+                break
+        
+        if target_shift_idx is None:
+            return
+        
+        num_agents = len(self.data.agents)
+        num_days = len(self.data.dates)
+        
+        for a in range(num_agents):
+            # For each 7-day window
+            for start in range(0, num_days - 6):
+                shift_bools = []
+                for d in range(start, start + 7):
+                    is_target = self.model.NewBoolVar(f'is_{shift_period}_a{a}_d{d}_w{start}')
+                    self.model.Add(
+                        self.schedule_vars[(a, d)] == target_shift_idx
+                    ).OnlyEnforceIf(is_target)
+                    self.model.Add(
+                        self.schedule_vars[(a, d)] != target_shift_idx
+                    ).OnlyEnforceIf(is_target.Not())
+                    shift_bools.append(is_target)
+                
+                self.model.Add(sum(shift_bools) <= limit)
+    
+    def _add_min_off_days_per_week(self, limit: int = 1):
+        """
+        Ensure a minimum number of off days per 7-day window.
+        """
+        num_agents = len(self.data.agents)
+        num_days = len(self.data.dates)
+        
+        for a in range(num_agents):
+            for start in range(0, num_days - 6):
+                off_bools = []
+                for d in range(start, start + 7):
+                    is_off = self.model.NewBoolVar(f'min_off_a{a}_d{d}_w{start}')
+                    self.model.Add(
+                        self.schedule_vars[(a, d)] == self.off_index
+                    ).OnlyEnforceIf(is_off)
+                    self.model.Add(
+                        self.schedule_vars[(a, d)] != self.off_index
+                    ).OnlyEnforceIf(is_off.Not())
+                    off_bools.append(is_off)
+                
+                self.model.Add(sum(off_bools) >= limit)
     
     def _add_coverage_objective(self):
         """

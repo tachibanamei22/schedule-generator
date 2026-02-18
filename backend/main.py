@@ -11,8 +11,16 @@ import json
 import tempfile
 from pathlib import Path
 
+# Load .env file for local development
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass  # python-dotenv not installed, rely on system env vars
+
 from data_parser import load_wfm_data, load_forecast_data
 from solver import ScheduleSolver
+from rule_engine import parse_regulations_with_llm, rules_to_json
 
 app = FastAPI(
     title="WFM Schedule Generator",
@@ -34,7 +42,8 @@ app_state = {
     "results": None,
     "uploaded_file": None,
     "forecast_uploaded": False,
-    "forecast_file": None
+    "forecast_file": None,
+    "parsed_rules": None
 }
 
 UPLOAD_DIR = Path("uploads")
@@ -61,6 +70,10 @@ async def upload_file(file: UploadFile = File(...)):
         app_state["wfm_data"] = wfm_data
         app_state["uploaded_file"] = str(filepath)
         
+        # Parse regulations with GPT
+        parsed_rules = parse_regulations_with_llm(wfm_data.regulations)
+        app_state["parsed_rules"] = parsed_rules
+        
         return {
             "message": "File uploaded and parsed successfully",
             "data": {
@@ -81,6 +94,7 @@ async def upload_file(file: UploadFile = File(...)):
                 ],
                 "dates": wfm_data.dates,
                 "regulations": wfm_data.regulations,
+                "parsed_rules": rules_to_json(parsed_rules),
                 "leave_requests": [
                     {
                         "employee_id": lr.employee_id,
@@ -155,7 +169,7 @@ async def generate_schedule(time_limit: int = 60):
     
     try:
         solver = ScheduleSolver(app_state["wfm_data"])
-        solver.build_model()
+        solver.build_model(parsed_rules=app_state.get("parsed_rules"))
         
         success = solver.solve(time_limit_seconds=time_limit)
         

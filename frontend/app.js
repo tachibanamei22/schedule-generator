@@ -131,14 +131,33 @@ function renderDataSummary(data) {
     </div>
   `).join('');
 
-  // Regulations
+  // Regulations with GPT-parsed status
   if (data.regulations && data.regulations.length > 0) {
-    regulationsList.innerHTML = data.regulations.map((r, i) => `
-      <div class="regulation-item">
-        <span class="reg-num">${i + 1}</span>
-        <span>${escapeHtml(r)}</span>
-      </div>
-    `).join('');
+    const parsedRules = data.parsed_rules || [];
+
+    regulationsList.innerHTML = data.regulations.map((r, i) => {
+      const parsed = parsedRules[i];
+      if (parsed) {
+        const badge = parsed.enforceable
+          ? '<span class="rule-badge rule-enforced">🟢 Enforced</span>'
+          : '<span class="rule-badge rule-display">🟡 Display Only</span>';
+        const detail = parsed.enforceable
+          ? `<span class="rule-detail">${parsed.type}${Object.keys(parsed.params).length ? ' · ' + JSON.stringify(parsed.params) : ''}</span>`
+          : `<span class="rule-detail">${parsed.reason || 'Cannot map to solver constraint'}</span>`;
+        return `
+          <div class="regulation-item">
+            <span class="reg-num">${i + 1}</span>
+            <span class="reg-text">${escapeHtml(r)}</span>
+            ${badge}
+            ${detail}
+          </div>`;
+      }
+      return `
+        <div class="regulation-item">
+          <span class="reg-num">${i + 1}</span>
+          <span>${escapeHtml(r)}</span>
+        </div>`;
+    }).join('');
   }
 
   dataSummary.style.display = 'block';
