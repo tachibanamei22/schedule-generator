@@ -76,6 +76,55 @@
                 </div>
                 <p class="progress-text">Parsing file...</p>
             </div>
+
+            <!-- Format Guide: WFM Data -->
+            <div class="format-guide">
+                <button class="format-guide-toggle" onclick="this.parentElement.classList.toggle('open')">
+                    <span class="format-guide-icon">📋</span>
+                    <span>Data Format Guide — What You Can Change</span>
+                    <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2">
+                        <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                </button>
+                <div class="format-guide-body">
+                    <div class="guide-section">
+                        <h4>✅ You Can Freely Change</h4>
+                        <ul class="guide-list guide-ok">
+                            <li><strong>Number of agents</strong> — add or remove rows in the <code>Input</code> sheet
+                            </li>
+                            <li><strong>Schedule dates</strong> — change the date columns (row 2) to any period</li>
+                            <li><strong>Agent details</strong> — names, roles, channels can be anything</li>
+                            <li><strong>Shift codes</strong> — add/remove/modify shifts in the <code>Shift Code</code>
+                                sheet</li>
+                            <li><strong>Leave requests</strong> — add/remove leave entries in
+                                <code>Leave_Req OFF Tracker</code></li>
+                        </ul>
+                    </div>
+                    <div class="guide-section">
+                        <h4>⚠️ Must Stay Fixed</h4>
+                        <ul class="guide-list guide-warn">
+                            <li><strong>Sheet names</strong> — must be exactly: <code>Input</code>,
+                                <code>Shift Code</code>, <code>Regulation</code>, <code>Leave_Req OFF Tracker</code>
+                            </li>
+                            <li><strong>Column order in Input</strong> — ID (col A), Name (B), Role (C), Channel (D),
+                                Detail (E), then dates from col F onwards</li>
+                            <li><strong>Dates in row 2</strong> — must be real Excel date values (not plain text)</li>
+                            <li><strong>Shift Code format</strong> — col A = code name, col B = time range like
+                                <code>08:00-17:00</code></li>
+                            <li><strong>Regulations</strong> — text shows in UI but only these 4 rules are enforced by
+                                the solver:
+                                <ol>
+                                    <li>Max 6 consecutive working days</li>
+                                    <li>No shift jumping (e.g., 03:00 → 20:00 without OFF)</li>
+                                    <li>Max 2 consecutive days off</li>
+                                    <li>No night shifts for female agents</li>
+                                </ol>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
         </section>
 
         <!-- Data Summary (shown after upload) -->
@@ -113,6 +162,40 @@
                     <div class="progress-fill"></div>
                 </div>
                 <p class="progress-text">Parsing forecast data...</p>
+            </div>
+
+            <!-- Format Guide: Forecast -->
+            <div class="format-guide">
+                <button class="format-guide-toggle" onclick="this.parentElement.classList.toggle('open')">
+                    <span class="format-guide-icon">📋</span>
+                    <span>Forecast Format Guide</span>
+                    <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2">
+                        <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                </button>
+                <div class="format-guide-body">
+                    <div class="guide-section">
+                        <h4>✅ You Can Freely Change</h4>
+                        <ul class="guide-list guide-ok">
+                            <li><strong>Number of days</strong> — add/remove day columns (auto-mapped to WFM dates)</li>
+                            <li><strong>Demand values</strong> — change the hourly staffing numbers per day</li>
+                            <li><strong>Weekend / weekday patterns</strong> — set any demand profile you want</li>
+                        </ul>
+                    </div>
+                    <div class="guide-section">
+                        <h4>⚠️ Must Stay Fixed</h4>
+                        <ul class="guide-list guide-warn">
+                            <li><strong>Sheet name</strong> — must be exactly <code>Data Forecast</code></li>
+                            <li><strong>Section header</strong> — must contain text <code>Bahasa (Forecast)</code></li>
+                            <li><strong>24 hour rows</strong> — one row per hour (0:00–23:00), starting 4 rows below the
+                                header</li>
+                            <li><strong>Day columns start at col B</strong> — col B = day 1, col C = day 2, etc.</li>
+                            <li><strong>Positional mapping</strong> — forecast day 1 maps to WFM date 1, day 2 → date 2,
+                                etc. (dates in forecast are ignored)</li>
+                        </ul>
+                    </div>
+                </div>
             </div>
         </section>
 
