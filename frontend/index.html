@@ -98,7 +98,11 @@
                             <li><strong>Shift codes</strong> — add/remove/modify shifts in the <code>Shift Code</code>
                                 sheet</li>
                             <li><strong>Leave requests</strong> — add/remove leave entries in
-                                <code>Leave_Req OFF Tracker</code></li>
+                                <code>Leave_Req OFF Tracker</code>
+                            </li>
+                            <li><strong>Regulations</strong> — write any rules in the <code>Regulation</code> sheet and
+                                GPT will interpret them into solver constraints. After upload, each rule shows 🟢
+                                Enforced or 🟡 Display Only</li>
                         </ul>
                     </div>
                     <div class="guide-section">
@@ -111,15 +115,7 @@
                                 Detail (E), then dates from col F onwards</li>
                             <li><strong>Dates in row 2</strong> — must be real Excel date values (not plain text)</li>
                             <li><strong>Shift Code format</strong> — col A = code name, col B = time range like
-                                <code>08:00-17:00</code></li>
-                            <li><strong>Regulations</strong> — text shows in UI but only these 4 rules are enforced by
-                                the solver:
-                                <ol>
-                                    <li>Max 6 consecutive working days</li>
-                                    <li>No shift jumping (e.g., 03:00 → 20:00 without OFF)</li>
-                                    <li>Max 2 consecutive days off</li>
-                                    <li>No night shifts for female agents</li>
-                                </ol>
+                                <code>08:00-17:00</code>
                             </li>
                         </ul>
                     </div>
