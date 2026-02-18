@@ -4,6 +4,7 @@ FastAPI server for WFM Schedule Generator.
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 import shutil
 import os
 import json
@@ -287,6 +288,13 @@ async def export_excel():
         raise HTTPException(500, f"Error exporting: {str(e)}")
 
 
+# ─── Serve frontend static files ───
+frontend_dir = Path(__file__).parent.parent / "frontend"
+if frontend_dir.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

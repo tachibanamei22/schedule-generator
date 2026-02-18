@@ -1,0 +1,10 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+uploads/
+_dump_*.txt
+*.xlsx
+.git/
+.gitignore
+*.md
