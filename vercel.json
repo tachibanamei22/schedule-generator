@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "outputDirectory": "frontend",
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "https://REPLACE_WITH_YOUR_RAILWAY_URL/api/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/$1"
+    }
+  ]
+}

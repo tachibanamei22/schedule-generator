@@ -35,6 +35,13 @@
                 </div>
             </div>
             <div class="header-actions">
+                <button id="resetBtn" class="btn btn-ghost" onclick="resetApp()" style="display:none">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="1 4 1 10 7 10"/>
+                        <path d="M3.51 15a9 9 0 1 0 .49-3.52"/>
+                    </svg>
+                    Start Over
+                </button>
                 <button id="exportBtn" class="btn btn-outline" disabled onclick="exportSchedule()">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -75,6 +82,19 @@
                     <div class="progress-fill"></div>
                 </div>
                 <p class="progress-text">Parsing file...</p>
+            </div>
+
+            <!-- Template Download -->
+            <div class="template-download">
+                <span class="template-hint">Don't have a WFM Data file yet?</span>
+                <a href="/api/download-template" class="btn btn-template" download>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Download Example Template
+                </a>
             </div>
 
             <!-- Format Guide: WFM Data -->
@@ -260,9 +280,10 @@
             <div class="card card-full">
                 <div class="card-header">
                     <h2>Agent Schedule Grid</h2>
-                    <div class="legend">
-                        <span class="legend-item"><span class="dot dot-morning"></span>03:00 Shift</span>
-                        <span class="legend-item"><span class="dot dot-evening"></span>20:00 Shift</span>
+                    <div class="legend" id="scheduleLegend">
+                        <span class="legend-item"><span class="dot dot-morning"></span>Morning</span>
+                        <span class="legend-item"><span class="dot dot-afternoon"></span>Afternoon</span>
+                        <span class="legend-item"><span class="dot dot-evening"></span>Night</span>
                         <span class="legend-item"><span class="dot dot-off"></span>OFF</span>
                         <span class="legend-item"><span class="dot dot-leave"></span>Leave/Resign</span>
                     </div>

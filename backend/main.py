@@ -191,6 +191,172 @@ async def generate_schedule(time_limit: int = 60):
         raise HTTPException(500, f"Error generating schedule: {str(e)}")
 
 
+@app.get("/api/download-template")
+async def download_template():
+    """Generate and return an example WFM Data Excel file."""
+    import openpyxl
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from datetime import datetime, timedelta
+
+    wb = openpyxl.Workbook()
+
+    # ── Styles ──────────────────────────────────────────────────────────────
+    hdr_fill  = PatternFill(start_color="1a1a2e", end_color="1a1a2e", fill_type="solid")
+    hdr_font  = Font(color="FFFFFF", bold=True, size=10)
+    note_fill = PatternFill(start_color="e3f2fd", end_color="e3f2fd", fill_type="solid")
+    note_font = Font(color="1565c0", italic=True, size=9)
+    date_fill = PatternFill(start_color="fff8e1", end_color="fff8e1", fill_type="solid")
+    thin      = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'),  bottom=Side(style='thin')
+    )
+    center    = Alignment(horizontal='center')
+
+    def hdr(ws, row, col, value):
+        c = ws.cell(row=row, column=col, value=value)
+        c.fill = hdr_fill; c.font = hdr_font; c.alignment = center; c.border = thin
+
+    def cell(ws, row, col, value, fill=None):
+        c = ws.cell(row=row, column=col, value=value)
+        c.alignment = center; c.border = thin
+        if fill: c.fill = fill
+        return c
+
+    # ── Sheet 1: Input ───────────────────────────────────────────────────────
+    ws_input = wb.active
+    ws_input.title = "Input"
+
+    # Row 1 – headers
+    for col, label in enumerate(["ID", "Name", "Role", "Channel", "Gender"], 1):
+        hdr(ws_input, 1, col, label)
+
+    # Generate 14 dates starting from the 1st of next month
+    today     = datetime.today().replace(day=1)
+    next_month= (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    dates     = [next_month + timedelta(days=i) for i in range(14)]
+
+    for i, dt in enumerate(dates):
+        col = 6 + i
+        hdr(ws_input, 1, col, dt.strftime('%d-%b'))
+        c = ws_input.cell(row=2, column=col, value=dt)
+        c.number_format = 'DD/MM/YYYY'
+        c.fill = date_fill; c.alignment = center; c.border = thin
+
+    # Row 2 col A–E: label hint
+    ws_input.cell(row=2, column=1, value="← Date row →").font = Font(italic=True, color="888888", size=8)
+
+    # Sample agents
+    agents = [
+        ("EMP001", "Ahmad Fauzi",        "Agent",    "Call", "L"),
+        ("EMP002", "Siti Rahayu",         "Agent",    "Call", "P"),
+        ("EMP003", "Budi Santoso",        "Senior",   "Call", "L"),
+        ("EMP004", "Dewi Lestari",        "Agent",    "Call", "P"),
+        ("EMP005", "Rizky Pratama",       "Agent",    "Call", "L"),
+        ("EMP006", "Anisa Putri",         "Agent",    "Chat", "P"),
+        ("EMP007", "Eko Wahyudi",         "TL",       "Call", "L"),
+        ("EMP008", "Fitri Handayani",     "Agent",    "Call", "P"),
+    ]
+    for r, (emp_id, name, role, channel, gender) in enumerate(agents, 3):
+        cell(ws_input, r, 1, emp_id)
+        cell(ws_input, r, 2, name)
+        cell(ws_input, r, 3, role)
+        cell(ws_input, r, 4, channel)
+        cell(ws_input, r, 5, gender)
+        for i in range(14):
+            cell(ws_input, r, 6 + i, "")
+
+    # Column widths
+    for col, w in zip("ABCDE", [10, 22, 10, 8, 8]):
+        ws_input.column_dimensions[col].width = w
+    for i in range(14):
+        ws_input.column_dimensions[chr(70 + i)].width = 12
+
+    # Note row
+    note_row = len(agents) + 4
+    note = ws_input.cell(row=note_row, column=1,
+        value="Gender codes: L = Laki-laki (Male), P = Perempuan (Female)  |  Leave date cells blank — the solver assigns shifts automatically")
+    note.font = note_font; note.fill = note_fill
+    ws_input.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=10)
+
+    # ── Sheet 2: Shift Code ──────────────────────────────────────────────────
+    ws_shift = wb.create_sheet("Shift Code")
+    for col, label in enumerate(["Code", "Time Range", "Description"], 1):
+        hdr(ws_shift, 1, col, label)
+
+    shift_codes = [
+        ("P1",  "06:00-15:00", "Morning early"),
+        ("P2",  "07:00-16:00", "Morning"),
+        ("P3",  "08:00-17:00", "Morning standard"),
+        ("P4",  "09:00-18:00", "Morning late"),
+        ("P10", "10:00-19:00", "Mid-morning"),
+        ("S1",  "11:00-20:00", "Afternoon"),
+        ("S2",  "12:00-21:00", "Afternoon"),
+        ("S4",  "13:00-22:00", "Afternoon late"),
+        ("S7",  "15:00-00:00", "Evening"),
+        ("M3",  "21:00-06:00", "Night"),
+        ("M1",  "22:00-07:00", "Night late"),
+        ("OFF", "",            "Rest day"),
+    ]
+    for r, (code, time_range, desc) in enumerate(shift_codes, 2):
+        cell(ws_shift, r, 1, code)
+        cell(ws_shift, r, 2, time_range)
+        cell(ws_shift, r, 3, desc)
+
+    for col, w in zip("ABC", [8, 14, 20]):
+        ws_shift.column_dimensions[col].width = w
+
+    # ── Sheet 3: Regulation ──────────────────────────────────────────────────
+    ws_reg = wb.create_sheet("Regulation")
+    hdr(ws_reg, 1, 2, "Regulation Text")
+
+    regulations = [
+        "Maximum 6 consecutive working days",
+        "Maximum 2 consecutive days off",
+        "No shift jumping — agents must stay on the same shift type unless they take an OFF day",
+        "Female agents (gender P) may not be assigned to night shifts (21:00 or later)",
+    ]
+    for r, reg in enumerate(regulations, 2):
+        c = ws_reg.cell(row=r, column=2, value=reg)
+        c.border = thin
+
+    ws_reg.column_dimensions['B'].width = 70
+
+    # ── Sheet 4: Leave_Req OFF Tracker ───────────────────────────────────────
+    ws_leave = wb.create_sheet("Leave_Req OFF Tracker")
+    for col, label in enumerate(["Employee ID", "Name", "Note", "Note2", "Leave Type", "Date"], 1):
+        hdr(ws_leave, 1, col, label)
+
+    leave_data = [
+        ("EMP001", "Ahmad Fauzi",    "", "", "Off",   dates[3]),
+        ("EMP002", "Siti Rahayu",    "", "", "Leave", dates[5]),
+        ("EMP003", "Budi Santoso",   "", "", "Off",   dates[6]),
+        ("EMP004", "Dewi Lestari",   "", "", "Leave", dates[7]),
+        ("EMP005", "Rizky Pratama",  "", "", "Off",   dates[8]),
+    ]
+    for r, (emp_id, name, n1, n2, ltype, dt) in enumerate(leave_data, 2):
+        cell(ws_leave, r, 1, emp_id)
+        cell(ws_leave, r, 2, name)
+        cell(ws_leave, r, 3, n1)
+        cell(ws_leave, r, 4, n2)
+        cell(ws_leave, r, 5, ltype)
+        c = ws_leave.cell(row=r, column=6, value=dt)
+        c.number_format = 'DD/MM/YYYY'
+        c.alignment = center; c.border = thin
+
+    for col, w in zip("ABCDEF", [12, 22, 8, 8, 12, 14]):
+        ws_leave.column_dimensions[col].width = w
+
+    # ── Save & return ────────────────────────────────────────────────────────
+    template_path = UPLOAD_DIR / "WFM_Data_Template.xlsx"
+    wb.save(str(template_path))
+
+    return FileResponse(
+        str(template_path),
+        filename="WFM_Data_Template.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
 @app.get("/api/results")
 async def get_results():
     """Get the most recent schedule results."""

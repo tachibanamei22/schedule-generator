@@ -5,7 +5,6 @@ import pandas as pd
 from datetime import datetime, time, timedelta
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
-import random
 
 
 @dataclass
@@ -150,37 +149,65 @@ def parse_shift_codes(wb) -> Dict[str, ShiftCode]:
     return shifts
 
 
+def _normalize_gender(raw: str) -> str:
+    """
+    Normalize gender codes to 'M' or 'F'.
+    Handles: P/Perempuan → F, L/Laki-laki → M, M → M, F → F
+    """
+    if not raw:
+        return "M"
+    v = str(raw).strip().upper()
+    if v in ("P", "PEREMPUAN", "WANITA", "FEMALE", "F"):
+        return "F"
+    if v in ("L", "LAKI", "LAKI-LAKI", "MALE", "M", "PRIA"):
+        return "M"
+    return "M"  # default
+
+
 def parse_agents(wb) -> Tuple[List[Agent], List[str]]:
-    """Parse the Input sheet for agents and dates."""
-    ws = wb['Input']
+    """
+    Parse agent list and schedule dates from the workbook.
+
+    Supports two formats:
+    - Custom WFM format: sheet named 'Input'
+      Row 1 = headers (looks for a 'Gender' column if present)
+      Row 2 = date values starting at col 6 (F)
+      Row 3+ = agent rows: ID(A), Name(B), Role(C), Channel(D), [Detail/Gender(E)], ...
+    - Simulation Schedule format: sheet named 'Call - Bahasa'
+      Row 2 = dates starting at col 9
+      Row 3 = headers; col 7 is Gender ('P'=Female, 'L'=Male)
+      Row 4+ = agent rows
+    """
+    if 'Call - Bahasa' in wb.sheetnames:
+        return _parse_agents_simulation(wb)
+    return _parse_agents_custom(wb)
+
+
+def _parse_agents_simulation(wb) -> Tuple[List[Agent], List[str]]:
+    """Parse agents from the Simulation Schedule 'Call - Bahasa' sheet."""
+    ws = wb['Call - Bahasa']
     agents = []
     dates = []
-    
-    # Row 1 (index 0) has headers: ID Employee, Employee Name, Roles, LOB/Channel, Details, then dates
-    # Row 2 (index 1) has actual date values
-    
-    # Get dates from row 2
-    for col_idx in range(6, ws.max_column + 1):
+
+    # Row 2 has dates starting at column 9
+    for col_idx in range(9, ws.max_column + 1):
         cell_val = ws.cell(row=2, column=col_idx).value
         if cell_val and isinstance(cell_val, datetime):
             dates.append(cell_val.strftime('%Y-%m-%d'))
         elif cell_val:
-            dates.append(str(cell_val))
-    
-    # Get agents from row 3 onwards
-    for row_idx in range(3, ws.max_row + 1):
-        emp_id = ws.cell(row=row_idx, column=1).value
+            break  # stop at first non-date
+
+    # Row 4+ has agents (row 3 is headers)
+    for row_idx in range(4, ws.max_row + 1):
+        emp_id = ws.cell(row=row_idx, column=2).value   # NIP
         if emp_id is None:
             break
-        
-        emp_name = ws.cell(row=row_idx, column=2).value or f"Employee {emp_id}"
-        role = ws.cell(row=row_idx, column=3).value or "Agent"
-        channel = ws.cell(row=row_idx, column=4).value or "Call"
-        
-        # Generate dummy gender data (70% M, 30% F)
-        random.seed(int(str(emp_id)))
-        gender = "F" if random.random() < 0.3 else "M"
-        
+
+        emp_name = ws.cell(row=row_idx, column=3).value or f"Employee {emp_id}"
+        role     = ws.cell(row=row_idx, column=4).value or "Agent"
+        channel  = ws.cell(row=row_idx, column=5).value or "Call"
+        gender   = _normalize_gender(ws.cell(row=row_idx, column=7).value)
+
         agents.append(Agent(
             id=str(emp_id),
             name=str(emp_name),
@@ -188,7 +215,73 @@ def parse_agents(wb) -> Tuple[List[Agent], List[str]]:
             channel=str(channel),
             gender=gender
         ))
-    
+
+    return agents, dates
+
+
+def _parse_agents_custom(wb) -> Tuple[List[Agent], List[str]]:
+    """Parse agents from the custom WFM 'Input' sheet."""
+    ws = wb['Input']
+    agents = []
+    dates = []
+
+    # --- Detect column layout from row 1 headers ---
+    headers = {}
+    for col_idx in range(1, ws.max_column + 1):
+        h = ws.cell(row=1, column=col_idx).value
+        if h is not None:
+            headers[str(h).strip().lower()] = col_idx
+
+    gender_col = headers.get('gender') or headers.get('jenis kelamin')
+
+    # Find where dates start: row 2, scanning from col 6 onwards
+    date_start_col = 6
+    for col_idx in range(6, ws.max_column + 1):
+        cell_val = ws.cell(row=2, column=col_idx).value
+        if cell_val and isinstance(cell_val, (datetime, str)):
+            date_start_col = col_idx
+            break
+
+    # Collect dates from row 2
+    for col_idx in range(date_start_col, ws.max_column + 1):
+        cell_val = ws.cell(row=2, column=col_idx).value
+        if cell_val and isinstance(cell_val, datetime):
+            dates.append(cell_val.strftime('%Y-%m-%d'))
+        elif cell_val and isinstance(cell_val, str):
+            dates.append(cell_val)
+        elif cell_val is None:
+            break
+
+    # Collect agents from row 3+
+    for row_idx in range(3, ws.max_row + 1):
+        emp_id = ws.cell(row=row_idx, column=1).value
+        if emp_id is None:
+            break
+
+        emp_name = ws.cell(row=row_idx, column=2).value or f"Employee {emp_id}"
+        role     = ws.cell(row=row_idx, column=3).value or "Agent"
+        channel  = ws.cell(row=row_idx, column=4).value or "Call"
+
+        # Gender: read from detected column, else col 5 if it looks like a gender code
+        if gender_col:
+            raw_gender = ws.cell(row=row_idx, column=gender_col).value
+            gender = _normalize_gender(raw_gender)
+        else:
+            # Try col 5 (Detail) as a fallback
+            detail_val = str(ws.cell(row=row_idx, column=5).value or "")
+            if detail_val.strip().upper() in ("M", "F", "P", "L"):
+                gender = _normalize_gender(detail_val)
+            else:
+                gender = "M"  # default
+
+        agents.append(Agent(
+            id=str(emp_id),
+            name=str(emp_name),
+            role=str(role),
+            channel=str(channel),
+            gender=gender
+        ))
+
     return agents, dates
 
 
@@ -316,17 +409,18 @@ def load_forecast_data(filepath: str, dates: List[str]) -> ForecastData:
     try:
         ws = wb['Data Forecast']
         
-        # --- Find the "Bahasa (Forecast)" section ---
+        # --- Find the Bahasa Forecast section ---
+        # Handles both "Bahasa (Forecast)" and "Time Interval Bahasa (Forecast)"
         header_row = None
-        for row_idx in range(1, min(ws.max_row + 1, 20)):
+        for row_idx in range(1, min(ws.max_row + 1, 30)):
             cell_val = ws.cell(row=row_idx, column=1).value
-            if cell_val and 'Bahasa (Forecast)' in str(cell_val):
+            if cell_val and 'Bahasa' in str(cell_val) and 'Forecast' in str(cell_val):
                 header_row = row_idx
                 break
-        
+
         if header_row is None:
-            # Fallback: typically at row 6
-            header_row = 6
+            # Fallback: typically at row 3 (Simulation Schedule) or row 6 (legacy)
+            header_row = 3
         
         # --- Count how many day columns exist ---
         # The date/day columns start at column 2
