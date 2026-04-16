@@ -218,6 +218,216 @@ async def setup_schedule(data: dict):
         raise HTTPException(400, f"Setup error: {str(e)}")
 
 
+@app.get("/api/download-agent-template")
+async def download_agent_template():
+    """Generate and return an agent list Excel template for bulk import."""
+    import openpyxl
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+
+    wb = openpyxl.Workbook()
+
+    # ── Styles ──────────────────────────────────────────────────────────────
+    hdr_fill  = PatternFill(start_color="1a1a2e", end_color="1a1a2e", fill_type="solid")
+    hdr_font  = Font(color="FFFFFF", bold=True, size=10)
+    note_fill = PatternFill(start_color="e8eaf6", end_color="e8eaf6", fill_type="solid")
+    note_font = Font(color="283593", italic=True, size=9)
+    ref_fill  = PatternFill(start_color="e3f2fd", end_color="e3f2fd", fill_type="solid")
+    thin = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'),  bottom=Side(style='thin')
+    )
+    center = Alignment(horizontal='center', vertical='center')
+
+    def hdr(ws, row, col, value, width=None):
+        c = ws.cell(row=row, column=col, value=value)
+        c.fill = hdr_fill; c.font = hdr_font
+        c.alignment = center; c.border = thin
+        return c
+
+    def cell(ws, row, col, value, fill=None, bold=False):
+        c = ws.cell(row=row, column=col, value=value)
+        c.alignment = center; c.border = thin
+        if fill: c.fill = fill
+        if bold: c.font = Font(bold=True, size=10)
+        return c
+
+    # ── Sheet 1: Team List ───────────────────────────────────────────────────
+    ws = wb.active
+    ws.title = "Team List"
+
+    # Row 1: instructions
+    ws.merge_cells('A1:H1')
+    inst = ws['A1']
+    inst.value = "Fill in your team details below. Do not change column headers. Refer to the 'Valid Values' sheet for accepted inputs."
+    inst.font  = note_font
+    inst.fill  = note_fill
+    inst.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    ws.row_dimensions[1].height = 28
+
+    # Row 2: column headers
+    cols = ["No", "NIP", "Name", "Skill", "Channel", "Site", "Gender", "Religion"]
+    for i, label in enumerate(cols, 1):
+        hdr(ws, 2, i, label)
+
+    # Sample data
+    samples = [
+        (1, "EMP001", "Ahmad Fauzi",    "Bahasa",  "Call",         "Jakarta",   "L", "Islam"),
+        (2, "EMP002", "Siti Rahayu",    "Bahasa",  "Call",         "Jakarta",   "P", "Islam"),
+        (3, "EMP003", "Budi Santoso",   "English", "Chat",         "Semarang",  "L", "Islam"),
+        (4, "EMP004", "Dewi Lestari",   "Bahasa",  "Social Media", "Surabaya",  "P", "Kristen"),
+        (5, "EMP005", "Rizky Pratama",  "English", "Email",        "Bandung",   "L", "Islam"),
+    ]
+    for r_offset, row_data in enumerate(samples):
+        for c_offset, val in enumerate(row_data):
+            cell(ws, 3 + r_offset, c_offset + 1, val)
+
+    # Column widths
+    for col_letter, width in zip("ABCDEFGH", [6, 12, 22, 10, 14, 14, 10, 12]):
+        ws.column_dimensions[col_letter].width = width
+
+    # ── Sheet 2: Valid Values ─────────────────────────────────────────────────
+    ws2 = wb.create_sheet("Valid Values")
+    ws2.column_dimensions['A'].width = 14
+    ws2.column_dimensions['B'].width = 36
+
+    ref_rows = [
+        ("Column",      "Accepted Values"),
+        ("Skill",       "Bahasa | English"),
+        ("Channel",     "Social Media | Call | Email | Chat"),
+        ("Site",        "Jakarta | Semarang | Surabaya | Bandung | Yogyakarta"),
+        ("Gender",      "L  (Laki-laki / Male)   |   P  (Perempuan / Female)"),
+        ("Religion",    "Islam | Kristen | Hindu | Buddha | Katolik"),
+        ("NIP",         "Any unique employee ID string (e.g. EMP001)"),
+        ("No",          "Row number — fill in or leave blank, will be ignored on import"),
+    ]
+    for r, (col_name, values) in enumerate(ref_rows, 1):
+        c1 = ws2.cell(row=r, column=1, value=col_name)
+        c2 = ws2.cell(row=r, column=2, value=values)
+        if r == 1:
+            c1.font = hdr_font; c1.fill = hdr_fill
+            c2.font = hdr_font; c2.fill = hdr_fill
+        else:
+            c1.fill = ref_fill; c1.font = Font(bold=True, size=10)
+            c2.fill = PatternFill(start_color="fafafa", end_color="fafafa", fill_type="solid")
+        c1.border = thin; c2.border = thin
+        c1.alignment = center
+        c2.alignment = Alignment(horizontal='left', vertical='center')
+
+    template_path = UPLOAD_DIR / "Agent_List_Template.xlsx"
+    wb.save(str(template_path))
+
+    return FileResponse(
+        str(template_path),
+        filename="Agent_List_Template.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+@app.post("/api/parse-agents")
+async def parse_agents(file: UploadFile = File(...)):
+    """Parse an agent list Excel file and return structured agent data."""
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(400, "Please upload an Excel file (.xlsx or .xls)")
+
+    try:
+        import openpyxl, io
+
+        content = await file.read()
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        ws = wb.active
+
+        # Find the header row — scan first 10 rows for one containing "name" or "nip"
+        header_row_idx = None
+        header_map = {}
+        for row_idx, row in enumerate(ws.iter_rows(max_row=10, values_only=True), 1):
+            row_lower = [str(v).strip().lower() if v is not None else '' for v in row]
+            if 'name' in row_lower or 'nip' in row_lower:
+                header_row_idx = row_idx
+                for col_idx, val in enumerate(row_lower):
+                    header_map[val] = col_idx
+                break
+
+        if header_row_idx is None:
+            raise HTTPException(400, "Could not find a header row. Make sure your file has 'NIP' and 'Name' column headers.")
+
+        # Normalise common aliases
+        alias = {
+            'employee id': 'nip', 'emp id': 'nip', 'id': 'nip',
+            'full name': 'name', 'agent name': 'name',
+            'skills': 'skill',
+            'gender': 'gender', 'sex': 'gender',
+            'religion': 'religion', 'agama': 'religion',
+            'site': 'site', 'location': 'site',
+            'channel': 'channel',
+        }
+        normalised = {}
+        for raw_key, col_idx in header_map.items():
+            key = alias.get(raw_key, raw_key)
+            normalised[key] = col_idx
+
+        valid_skills    = {'bahasa', 'english'}
+        valid_channels  = {'social media', 'call', 'email', 'chat'}
+        valid_sites     = {'jakarta', 'semarang', 'surabaya', 'bandung', 'yogyakarta'}
+        valid_genders   = {'l', 'p', 'm', 'f'}
+        valid_religions = {'islam', 'kristen', 'hindu', 'buddha', 'katolik'}
+
+        def get_col(row, field):
+            idx = normalised.get(field)
+            if idx is None: return ''
+            val = row[idx]
+            return str(val).strip() if val is not None else ''
+
+        agents = []
+        for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
+            # Skip fully empty rows
+            if all(v is None or str(v).strip() == '' for v in row):
+                continue
+
+            name = get_col(row, 'name')
+            if not name:
+                continue  # skip rows without a name
+
+            nip      = get_col(row, 'nip')
+            skill    = get_col(row, 'skill')
+            channel  = get_col(row, 'channel')
+            site     = get_col(row, 'site')
+            gender   = get_col(row, 'gender').upper()
+            religion = get_col(row, 'religion')
+
+            # Normalise gender: M/male → L, F/female → P
+            if gender in ('M', 'MALE', 'LAKI-LAKI', 'LAKI'):
+                gender = 'L'
+            elif gender in ('F', 'FEMALE', 'PEREMPUAN'):
+                gender = 'P'
+
+            # Validate / fallback to defaults
+            if skill.lower() not in valid_skills:       skill    = 'Bahasa'
+            if channel.lower() not in valid_channels:   channel  = 'Call'
+            if site.lower() not in valid_sites:         site     = 'Jakarta'
+            if gender not in ('L', 'P'):                gender   = 'L'
+            if religion.lower() not in valid_religions: religion = 'Islam'
+
+            agents.append({
+                'nip':      nip,
+                'name':     name,
+                'skill':    skill,
+                'channel':  channel,
+                'site':     site,
+                'gender':   gender,
+                'religion': religion,
+            })
+
+        if not agents:
+            raise HTTPException(400, "No valid agent rows found in the file. Check that the Name column has data.")
+
+        return {"agents": agents, "count": len(agents)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error parsing file: {str(e)}")
+
+
 @app.get("/api/download-template")
 async def download_template():
     """Generate and return an example WFM Data Excel file."""

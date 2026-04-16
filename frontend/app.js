@@ -67,7 +67,110 @@ const regulationsInput    = document.getElementById('regulationsInput');
   addAgentRow({ nip: 'EMP003', name: 'Dewi Lestari',  skill: 'Bahasa',  channel: 'Social Media', site: 'Surabaya',  gender: 'P', religion: 'Kristen' });
 
   buildDemandGrid();
+  initImportDropzone();
 })();
+
+// ─── Bulk Import ───
+
+function initImportDropzone() {
+  const zone = document.getElementById('importDropzone');
+  if (!zone) return;
+
+  zone.addEventListener('dragenter', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', e => {
+    if (!zone.contains(e.relatedTarget)) zone.classList.remove('drag-over');
+  });
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) handleAgentFile(file);
+  });
+
+  // Clicking the zone also opens the file picker
+  zone.addEventListener('click', e => {
+    if (e.target.closest('.import-dropzone-loading')) return;
+    document.getElementById('agentFileInput').click();
+  });
+}
+
+function handleAgentFileSelect(event) {
+  const file = event.target.files[0];
+  if (file) handleAgentFile(file);
+  // Reset so the same file can be re-selected
+  event.target.value = '';
+}
+window.handleAgentFileSelect = handleAgentFileSelect;
+
+async function handleAgentFile(file) {
+  if (!file.name.match(/\.(xlsx|xls)$/i)) {
+    showToast('Please select an Excel file (.xlsx or .xls)', 'error');
+    return;
+  }
+
+  const zone    = document.getElementById('importDropzone');
+  const loading = document.getElementById('importLoading');
+  const loadTxt = document.getElementById('importLoadingText');
+
+  zone.classList.add('loading');
+  if (loading) loading.style.display = 'flex';
+  if (loadTxt) loadTxt.textContent = `Parsing "${file.name}"…`;
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const res = await fetch(`${API_BASE}/api/parse-agents`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Parse failed' }));
+      throw new Error(err.detail || 'Parse failed');
+    }
+
+    const { agents, count } = await res.json();
+    importAgents(agents);
+    showToast(`Imported ${count} agent${count !== 1 ? 's' : ''} from "${file.name}"`, 'success');
+
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    zone.classList.remove('loading', 'drag-over');
+    if (loading) loading.style.display = 'none';
+  }
+}
+
+function importAgents(agents) {
+  // Clear existing rows
+  agentsTableBody.innerHTML = '';
+  // Add a row for each imported agent
+  for (const agent of agents) {
+    addAgentRow(agent);
+  }
+}
+
+async function downloadAgentTemplate() {
+  try {
+    const res = await fetch(`${API_BASE}/api/download-agent-template`);
+    if (!res.ok) throw new Error('Download failed');
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'Agent_List_Template.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Template downloaded!', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+window.downloadAgentTemplate = downloadAgentTemplate;
 
 // ─── Agent Table ───
 
