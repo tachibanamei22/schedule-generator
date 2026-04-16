@@ -3,7 +3,7 @@ FastAPI server for WFM Schedule Generator.
 """
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import shutil
 import os
@@ -221,7 +221,7 @@ async def setup_schedule(data: dict):
 @app.get("/api/download-agent-template")
 async def download_agent_template():
     """Generate and return an agent list Excel template for bulk import."""
-    import openpyxl
+    import openpyxl, io
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
     wb = openpyxl.Workbook()
@@ -313,13 +313,14 @@ async def download_agent_template():
         c1.alignment = center
         c2.alignment = Alignment(horizontal='left', vertical='center')
 
-    template_path = UPLOAD_DIR / "Agent_List_Template.xlsx"
-    wb.save(str(template_path))
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
 
-    return FileResponse(
-        str(template_path),
-        filename="Agent_List_Template.xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=Agent_List_Template.xlsx"}
     )
 
 
@@ -431,7 +432,7 @@ async def parse_agents(file: UploadFile = File(...)):
 @app.get("/api/download-template")
 async def download_template():
     """Generate and return an example WFM Data Excel file."""
-    import openpyxl
+    import openpyxl, io
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from datetime import datetime, timedelta
 
@@ -584,13 +585,14 @@ async def download_template():
         ws_leave.column_dimensions[col].width = w
 
     # ── Save & return ────────────────────────────────────────────────────────
-    template_path = UPLOAD_DIR / "WFM_Data_Template.xlsx"
-    wb.save(str(template_path))
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
 
-    return FileResponse(
-        str(template_path),
-        filename="WFM_Data_Template.xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=WFM_Data_Template.xlsx"}
     )
 
 
@@ -610,9 +612,9 @@ async def export_excel():
         raise HTTPException(404, "No schedule has been generated yet")
     
     try:
-        import openpyxl
+        import openpyxl, io
         from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-        
+
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Generated Schedule"
@@ -693,13 +695,14 @@ async def export_excel():
             ws2.cell(row=row_idx, column=6, value=stats.get('leave_count', 0)).border = thin_border
             ws2.cell(row=row_idx, column=7, value=stats.get('forecast_demand', 0)).border = thin_border
         
-        export_path = UPLOAD_DIR / "generated_schedule.xlsx"
-        wb.save(str(export_path))
-        
-        return FileResponse(
-            str(export_path),
-            filename="WFM_Generated_Schedule.xlsx",
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=WFM_Generated_Schedule.xlsx"}
         )
     except Exception as e:
         raise HTTPException(500, f"Error exporting: {str(e)}")
