@@ -343,10 +343,14 @@ class ScheduleSolver:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _add_coverage_objective(self):
-        """
-        Minimise the sum of |actual_coverage(day, hour) - forecast_demand(day, hour)|
-        across all days and hours, plus a fairness penalty for OFF-day distribution.
-        """
+        """Route to the appropriate objective based on available demand data."""
+        if self.data.shift_demand:
+            self._add_shift_demand_objective()
+        else:
+            self._add_hourly_coverage_objective()
+
+    def _add_hourly_coverage_objective(self):
+        """Original hourly-forecast-based coverage objective (kept for backward compat)."""
         num_agents = len(self.data.agents)
         num_days   = len(self.data.dates)
 
@@ -404,6 +408,46 @@ class ScheduleSolver:
 
         self.model.Minimize(sum(total_penalty))
 
+    def _add_shift_demand_objective(self):
+        """
+        When shift_demand is set: minimise |actual_assigned(shift, day) - target(shift, day)|
+        for every (shift, day) pair, plus a fairness penalty for OFF-day distribution.
+        """
+        num_agents = len(self.data.agents)
+        num_days   = len(self.data.dates)
+
+        total_penalty = []
+
+        for s_idx, code in enumerate(self.working_shifts):
+            if code in ('OFF', 'Leave', 'Resign'):
+                continue
+            demands = self.data.shift_demand.get(code, [])
+            for d in range(num_days):
+                target = int(demands[d]) if d < len(demands) else 0
+
+                actual_sum = sum(self.is_on_shift[(a, d, s_idx)] for a in range(num_agents))
+                count = self.model.NewIntVar(0, num_agents, f'cnt_{s_idx}_{d}')
+                self.model.Add(count == actual_sum)
+
+                dev     = self.model.NewIntVar(-num_agents, num_agents, f'dev_{s_idx}_{d}')
+                abs_dev = self.model.NewIntVar(0, num_agents,            f'adev_{s_idx}_{d}')
+                self.model.Add(dev == count - target)
+                self.model.AddAbsEquality(abs_dev, dev)
+                total_penalty.append(abs_dev)
+
+        # Fair OFF-day distribution (~1 day off per 7 working days)
+        target_off = max(1, num_days // 7)
+        for a in range(num_agents):
+            off_count   = self.model.NewIntVar(0, num_days, f'offc_{a}')
+            self.model.Add(off_count == sum(self._is_off(a, d) for d in range(num_days)))
+            dev_off     = self.model.NewIntVar(-num_days, num_days, f'devo_{a}')
+            abs_dev_off = self.model.NewIntVar(0, num_days,          f'adevo_{a}')
+            self.model.Add(dev_off == off_count - target_off)
+            self.model.AddAbsEquality(abs_dev_off, dev_off)
+            total_penalty.append(abs_dev_off)
+
+        self.model.Minimize(sum(total_penalty))
+
     # ──────────────────────────────────────────────────────────────────────────
     # Solve & extract
     # ──────────────────────────────────────────────────────────────────────────
@@ -429,14 +473,8 @@ class ScheduleSolver:
                 s_idx = self.solver.Value(self.schedule_vars[(a, d)])
                 code  = self.working_shifts[s_idx]
 
-                if code in ('OFF', 'Leave', 'Resign'):
-                    agent_sched[date_str] = code
-                else:
-                    sc = self.data.shift_codes.get(code)
-                    if sc and sc.start_time:
-                        agent_sched[date_str] = sc.start_time.strftime('%H:%M')
-                    else:
-                        agent_sched[date_str] = code
+                # Always store the shift code (e.g. "P1", "M3", "OFF") — not the start time
+                agent_sched[date_str] = code
 
             self.result_schedule[agent.id] = agent_sched
 
@@ -448,6 +486,9 @@ class ScheduleSolver:
                 'role':     agent.role,
                 'channel':  agent.channel,
                 'gender':   agent.gender,
+                'skill':    getattr(agent, 'skill', ''),
+                'site':     getattr(agent, 'site', ''),
+                'religion': getattr(agent, 'religion', ''),
                 'schedule': self.result_schedule.get(agent.id, {}),
             }
             for agent in self.data.agents
@@ -462,6 +503,7 @@ class ScheduleSolver:
             'coverage':     self._calculate_coverage(),
             'solve_status': 'OPTIMAL' if self.solve_status == cp_model.OPTIMAL else 'FEASIBLE',
             'solve_time':   round(self.solve_time, 2),
+            'shift_demand': dict(self.data.shift_demand),
         }
 
     def _shift_codes_json(self) -> dict:
@@ -494,31 +536,35 @@ class ScheduleSolver:
             off_count = leave_count = total_working = 0
 
             for agent in self.data.agents:
-                shift_display = self.result_schedule.get(agent.id, {}).get(date_str, 'OFF')
-                if shift_display == 'OFF':
+                code = self.result_schedule.get(agent.id, {}).get(date_str, 'OFF')
+                if code == 'OFF':
                     off_count += 1
-                elif shift_display in ('Leave', 'Resign'):
+                elif code in ('Leave', 'Resign'):
                     leave_count += 1
                 else:
                     total_working += 1
-                    # Find the shift code from display value
-                    for code in self.working_shifts:
-                        sc = self.data.shift_codes.get(code)
-                        if sc and sc.start_time and sc.start_time.strftime('%H:%M') == shift_display:
-                            period = sc.shift_period
-                            period_counts[period] = period_counts.get(period, 0) + 1
-                            break
+                    sc = self.data.shift_codes.get(code)
+                    if sc:
+                        period = sc.shift_period
+                        period_counts[period] = period_counts.get(period, 0) + 1
 
             # Peak forecast demand for the day
             day_forecast = self.data.forecast.requirements.get(date_str, {})
             peak_demand  = max(day_forecast.values()) if day_forecast else 0
 
+            # Sum shift demand for this day
+            day_demand_total = 0
+            for code, demands in self.data.shift_demand.items():
+                day_demand_total += demands[d] if d < len(demands) else 0
+
             coverage[date_str] = {
-                'date':          date_str,
-                'total_working': total_working,
-                'off_count':     off_count,
-                'leave_count':   leave_count,
-                'forecast_demand': peak_demand,
+                'date':           date_str,
+                'total_working':  total_working,
+                'off_count':      off_count,
+                'leave_count':    leave_count,
+                'forecast_demand': day_demand_total if self.data.shift_demand else peak_demand,
+                'demand_total':   day_demand_total,
+                'gap':            day_demand_total - total_working,
                 **{f'{p}_count': c for p, c in period_counts.items()},
             }
 

@@ -1,429 +1,463 @@
 /**
- * WFM Schedule Generator — Frontend Application
+ * WFM Schedule Generator — Frontend Application (Form-based, no file upload)
  */
 
-const API_BASE = '';
+const API_BASE = window.location.port === '3000' ? 'http://localhost:8000' : '';
+
+// ─── Shift definitions ───
+const DEFAULT_SHIFTS = [
+  { code: 'P1',  time: '06:00-15:00', period: 'morning' },
+  { code: 'P2',  time: '07:00-16:00', period: 'morning' },
+  { code: 'P3',  time: '08:00-17:00', period: 'morning' },
+  { code: 'P4',  time: '09:00-18:00', period: 'morning' },
+  { code: 'P10', time: '10:00-19:00', period: 'morning' },
+  { code: 'S1',  time: '11:00-20:00', period: 'afternoon' },
+  { code: 'S2',  time: '12:00-21:00', period: 'afternoon' },
+  { code: 'S3',  time: '12:30-21:30', period: 'afternoon' },
+  { code: 'S4',  time: '13:00-22:00', period: 'afternoon' },
+  { code: 'S5',  time: '16:00-01:00', period: 'afternoon' },
+  { code: 'S6',  time: '14:00-23:00', period: 'afternoon' },
+  { code: 'S7',  time: '15:00-00:00', period: 'afternoon' },
+  { code: 'M3',  time: '21:00-06:00', period: 'night' },
+  { code: 'M1',  time: '22:00-07:00', period: 'night' },
+];
+
+// ─── Dropdown options ───
+const SKILL_OPTIONS    = ['Bahasa', 'English'];
+const CHANNEL_OPTIONS  = ['Social Media', 'Call', 'Email', 'Chat'];
+const SITE_OPTIONS     = ['Jakarta', 'Semarang', 'Surabaya', 'Bandung', 'Yogyakarta'];
+const GENDER_OPTIONS   = [{ value: 'P', label: 'P (Perempuan)' }, { value: 'L', label: 'L (Laki-laki)' }];
+const RELIGION_OPTIONS = ['Islam', 'Kristen', 'Hindu', 'Buddha', 'Katolik'];
+
+// ─── App State ───
+let state = {
+  agents: [],
+  dates: [],
+  results: null,
+  solveTimerInterval: null,
+  currentShiftCodes: {},
+};
 
 // ─── DOM References ───
-const fileInput         = document.getElementById('fileInput');
-const uploadZone        = document.getElementById('uploadZone');
-const uploadProgress    = document.getElementById('uploadProgress');
-const uploadSection     = document.getElementById('uploadSection');
-const dataSummary       = document.getElementById('dataSummary');
-const statsGrid         = document.getElementById('statsGrid');
-const regulationsList   = document.getElementById('regulationsList');
-const forecastSection   = document.getElementById('forecastSection');
-const forecastUploadZone= document.getElementById('forecastUploadZone');
-const forecastFileInput = document.getElementById('forecastFileInput');
-const forecastProgress  = document.getElementById('forecastProgress');
-const forecastSummary   = document.getElementById('forecastSummary');
-const forecastStatsGrid = document.getElementById('forecastStatsGrid');
-const generateSection   = document.getElementById('generateSection');
-const generateBtn       = document.getElementById('generateBtn');
-const solverProgress    = document.getElementById('solverProgress');
-const resultsSection    = document.getElementById('resultsSection');
-const solverStats       = document.getElementById('solverStats');
-const coverageChart     = document.getElementById('coverageChart');
-const scheduleTable     = document.getElementById('scheduleTable');
-const exportBtn         = document.getElementById('exportBtn');
-const resetBtn          = document.getElementById('resetBtn');
-const timeLimitSelect   = document.getElementById('timeLimit');
+const agentSetupSection   = document.getElementById('agentSetupSection');
+const demandSetupSection  = document.getElementById('demandSetupSection');
+const solverProgressOverlay = document.getElementById('solverProgressOverlay');
+const resultsSection      = document.getElementById('resultsSection');
+const agentsTableBody     = document.getElementById('agentsTableBody');
+const agentCountBadge     = document.getElementById('agentCountBadge');
+const exportBtn           = document.getElementById('exportBtn');
+const resetBtn            = document.getElementById('resetBtn');
+const startDateInput      = document.getElementById('startDateInput');
+const numDaysSelect       = document.getElementById('numDaysSelect');
+const demandGrid          = document.getElementById('demandGrid');
+const solverStats         = document.getElementById('solverStats');
+const resultsTable        = document.getElementById('resultsTable');
+const solverProgressText  = document.getElementById('solverProgressText');
+const regulationsInput    = document.getElementById('regulationsInput');
 
-// ─── App state ───
-let currentShiftCodes = {};   // code → { period, label, time }
-let solveTimerInterval = null;
+// ─── Initialise ───
+(function init() {
+  // Default start date = today
+  const today = new Date();
+  startDateInput.value = formatDateISO(today);
 
-// ─── File Upload ───
-uploadZone.addEventListener('click', () => fileInput.click());
-uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
-uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
-uploadZone.addEventListener('drop', (e) => {
-  e.preventDefault(); uploadZone.classList.remove('drag-over');
-  if (e.dataTransfer.files[0]) handleUpload(e.dataTransfer.files[0]);
-});
-fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleUpload(fileInput.files[0]); });
+  // Add 3 sample rows
+  addAgentRow({ nip: 'EMP001', name: 'Siti Rahayu',   skill: 'Bahasa',  channel: 'Call',         site: 'Jakarta',   gender: 'P', religion: 'Islam' });
+  addAgentRow({ nip: 'EMP002', name: 'Budi Santoso',  skill: 'English', channel: 'Chat',         site: 'Semarang',  gender: 'L', religion: 'Islam' });
+  addAgentRow({ nip: 'EMP003', name: 'Dewi Lestari',  skill: 'Bahasa',  channel: 'Social Media', site: 'Surabaya',  gender: 'P', religion: 'Kristen' });
 
-async function handleUpload(file) {
-  if (!file.name.match(/\.xlsx?$/i)) { showToast('Please upload an Excel file (.xlsx)', 'error'); return; }
+  buildDemandGrid();
+})();
 
-  uploadProgress.style.display = 'block';
-  const progressFill = uploadProgress.querySelector('.progress-fill');
-  const progressText = uploadProgress.querySelector('.progress-text');
-  progressFill.style.width = '30%';
-  progressText.textContent = 'Uploading file...';
+// ─── Agent Table ───
 
-  const formData = new FormData();
-  formData.append('file', file);
+function buildSelect(options, selectedValue, name) {
+  const opts = options.map(o => {
+    const val   = typeof o === 'object' ? o.value : o;
+    const label = typeof o === 'object' ? o.label : o;
+    const sel   = val === selectedValue ? ' selected' : '';
+    return `<option value="${escapeHtml(val)}"${sel}>${escapeHtml(label)}</option>`;
+  });
+  return `<select name="${name}">${opts.join('')}</select>`;
+}
 
-  try {
-    progressFill.style.width = '60%';
-    progressText.textContent = 'Parsing WFM data...';
+function addAgentRow(defaults = {}) {
+  const tbody = agentsTableBody;
+  const rowNum = tbody.rows.length + 1;
 
-    const res = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: formData });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
-      throw new Error(err.detail || 'Upload failed');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td class="col-no">${rowNum}</td>
+    <td><input type="text" name="nip"      value="${escapeHtml(defaults.nip      || '')}" placeholder="NIP"></td>
+    <td><input type="text" name="name"     value="${escapeHtml(defaults.name     || '')}" placeholder="Full Name"></td>
+    <td>${buildSelect(SKILL_OPTIONS,    defaults.skill    || SKILL_OPTIONS[0],    'skill')}</td>
+    <td>${buildSelect(CHANNEL_OPTIONS,  defaults.channel  || CHANNEL_OPTIONS[0],  'channel')}</td>
+    <td>${buildSelect(SITE_OPTIONS,     defaults.site     || SITE_OPTIONS[0],     'site')}</td>
+    <td>${buildSelect(GENDER_OPTIONS,   defaults.gender   || GENDER_OPTIONS[0].value, 'gender')}</td>
+    <td>${buildSelect(RELIGION_OPTIONS, defaults.religion || RELIGION_OPTIONS[0], 'religion')}</td>
+    <td><button class="btn-delete-row" onclick="deleteAgentRow(this)" title="Remove agent">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button></td>
+  `;
+  tbody.appendChild(tr);
+  updateAgentCount();
+}
+
+function deleteAgentRow(btn) {
+  btn.closest('tr').remove();
+  // Re-number rows
+  Array.from(agentsTableBody.rows).forEach((row, i) => {
+    const noCell = row.querySelector('.col-no');
+    if (noCell) noCell.textContent = i + 1;
+  });
+  updateAgentCount();
+}
+
+function updateAgentCount() {
+  const n = agentsTableBody.rows.length;
+  agentCountBadge.textContent = `${n} agent${n !== 1 ? 's' : ''}`;
+}
+
+function getAgentsData() {
+  return Array.from(agentsTableBody.rows).map((row, i) => ({
+    id:       row.querySelector('[name=nip]').value.trim()  || `EMP${String(i + 1).padStart(3, '0')}`,
+    name:     row.querySelector('[name=name]').value.trim() || `Agent ${i + 1}`,
+    skill:    row.querySelector('[name=skill]').value,
+    channel:  row.querySelector('[name=channel]').value,
+    site:     row.querySelector('[name=site]').value,
+    gender:   row.querySelector('[name=gender]').value,
+    religion: row.querySelector('[name=religion]').value,
+  }));
+}
+
+// ─── Step Navigation ───
+
+function proceedToStep2() {
+  if (agentsTableBody.rows.length === 0) {
+    showToast('Please add at least one agent before continuing.', 'error');
+    return;
+  }
+  agentSetupSection.style.display = 'none';
+  demandSetupSection.style.display = 'block';
+  resetBtn.style.display = 'inline-flex';
+  demandSetupSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function backToStep1() {
+  demandSetupSection.style.display = 'none';
+  agentSetupSection.style.display = 'block';
+  agentSetupSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ─── Demand Grid ───
+
+function getScheduleDates() {
+  const start   = new Date(startDateInput.value + 'T00:00:00');
+  const numDays = parseInt(numDaysSelect.value);
+  const dates   = [];
+  for (let i = 0; i < numDays; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    dates.push(formatDateISO(d));
+  }
+  return dates;
+}
+
+function buildDemandGrid() {
+  const dates   = getScheduleDates();
+  const numDays = dates.length;
+  const DAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+  // Preserve existing values before rebuild
+  const oldValues = getDemandData();
+
+  let html = '<thead><tr>';
+  html += '<th class="shift-label-th">Shift</th>';
+  html += '<th class="shift-time-th">Time</th>';
+  for (let i = 0; i < numDays; i++) {
+    const d   = new Date(dates[i] + 'T00:00:00');
+    const dow = DAY_NAMES[d.getDay()];
+    const dom = d.getDate();
+    html += `<th class="demand-day-th">${dow}<br><span class="day-num">${dom}</span></th>`;
+  }
+  html += '</tr></thead><tbody>';
+
+  for (const shift of DEFAULT_SHIFTS) {
+    const rowClass = `demand-row-${shift.period}`;
+    html += `<tr class="${rowClass}" data-shift="${escapeHtml(shift.code)}">`;
+    html += `<td class="shift-label"><span class="shift-code-badge shift-${shift.period}">${escapeHtml(shift.code)}</span></td>`;
+    html += `<td class="shift-time">${escapeHtml(shift.time)}</td>`;
+    for (let i = 0; i < numDays; i++) {
+      const oldVal = oldValues[shift.code] ? (oldValues[shift.code][i] || 0) : 0;
+      html += `<td><input type="number" class="demand-input" min="0" max="999" value="${oldVal}" data-shift="${escapeHtml(shift.code)}" data-day="${i}"></td>`;
     }
+    html += '</tr>';
+  }
 
-    const data = await res.json();
-    progressFill.style.width = '100%';
-    progressText.textContent = 'Done!';
+  // Total row
+  html += '<tr class="demand-total-row"><td class="shift-label" colspan="2">Total / Day</td>';
+  for (let i = 0; i < numDays; i++) {
+    html += `<td class="demand-total-cell" id="demandTotal_${i}">0</td>`;
+  }
+  html += '</tr></tbody>';
 
-    setTimeout(() => {
-      uploadProgress.style.display = 'none';
-      renderDataSummary(data.data);
-      resetBtn.style.display = 'inline-flex';
-    }, 500);
+  demandGrid.innerHTML = html;
 
-  } catch (err) {
-    progressFill.style.width = '0%';
-    uploadProgress.style.display = 'none';
-    showToast(err.message, 'error');
+  // Wire up live totals
+  demandGrid.querySelectorAll('.demand-input').forEach(input => {
+    input.addEventListener('input', recalcDemandTotals);
+  });
+  recalcDemandTotals();
+}
+
+function recalcDemandTotals() {
+  const numDays = parseInt(numDaysSelect.value);
+  for (let i = 0; i < numDays; i++) {
+    let total = 0;
+    demandGrid.querySelectorAll(`input[data-day="${i}"]`).forEach(inp => {
+      total += parseInt(inp.value) || 0;
+    });
+    const cell = document.getElementById(`demandTotal_${i}`);
+    if (cell) cell.textContent = total;
   }
 }
 
-// ─── Data Summary ───
-function renderDataSummary(data) {
-  const uploadIcon    = uploadZone.querySelector('.upload-icon');
-  const uploadText    = uploadZone.querySelector('.upload-text');
-  const uploadSubtext = uploadZone.querySelector('.upload-subtext');
-  if (uploadIcon) uploadIcon.innerHTML = `
-    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
-    </svg>`;
-  if (uploadText)    uploadText.textContent = 'File uploaded successfully';
-  if (uploadSubtext) uploadSubtext.textContent = 'Click or drop to upload a different file';
-  uploadZone.style.borderColor = 'rgba(100, 255, 218, 0.3)';
-
-  statsGrid.innerHTML = [
-    { value: data.num_agents,         label: 'Agents' },
-    { value: data.num_dates,          label: 'Days' },
-    { value: data.num_shift_codes,    label: 'Shift Codes' },
-    { value: data.num_leave_requests, label: 'Leave Requests' },
-    { value: data.num_regulations,    label: 'Regulations' },
-  ].map(s => `
-    <div class="stat-card">
-      <div class="stat-value">${s.value}</div>
-      <div class="stat-label">${s.label}</div>
-    </div>`).join('');
-
-  if (data.regulations && data.regulations.length > 0) {
-    const parsedRules = data.parsed_rules || [];
-    regulationsList.innerHTML = data.regulations.map((r, i) => {
-      const parsed = parsedRules[i];
-      if (parsed) {
-        const badge  = parsed.enforceable
-          ? '<span class="rule-badge rule-enforced">🟢 Enforced</span>'
-          : '<span class="rule-badge rule-display">🟡 Display Only</span>';
-        const detail = parsed.enforceable
-          ? `<span class="rule-detail">${parsed.type}${Object.keys(parsed.params).length ? ' · ' + JSON.stringify(parsed.params) : ''}</span>`
-          : `<span class="rule-detail">${parsed.reason || 'Cannot map to solver constraint'}</span>`;
-        return `<div class="regulation-item">
-          <span class="reg-num">${i + 1}</span>
-          <span class="reg-text">${escapeHtml(r)}</span>
-          ${badge}${detail}
-        </div>`;
-      }
-      return `<div class="regulation-item"><span class="reg-num">${i + 1}</span><span>${escapeHtml(r)}</span></div>`;
-    }).join('');
-  }
-
-  dataSummary.style.display = 'block';
-  forecastSection.style.display = 'block';
-  dataSummary.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-// ─── Forecast Upload ───
-forecastUploadZone.addEventListener('click', () => forecastFileInput.click());
-forecastUploadZone.addEventListener('dragover', (e) => { e.preventDefault(); forecastUploadZone.classList.add('drag-over'); });
-forecastUploadZone.addEventListener('dragleave', () => forecastUploadZone.classList.remove('drag-over'));
-forecastUploadZone.addEventListener('drop', (e) => {
-  e.preventDefault(); forecastUploadZone.classList.remove('drag-over');
-  if (e.dataTransfer.files[0]) handleForecastUpload(e.dataTransfer.files[0]);
-});
-forecastFileInput.addEventListener('change', () => { if (forecastFileInput.files[0]) handleForecastUpload(forecastFileInput.files[0]); });
-
-async function handleForecastUpload(file) {
-  if (!file.name.match(/\.xlsx?$/i)) { showToast('Please upload an Excel file (.xlsx)', 'error'); return; }
-
-  forecastProgress.style.display = 'block';
-  const progressFill = forecastProgress.querySelector('.progress-fill');
-  const progressText = forecastProgress.querySelector('.progress-text');
-  progressFill.style.width = '30%';
-  progressText.textContent = 'Uploading forecast file...';
-
-  const formData = new FormData();
-  formData.append('file', file);
-
-  try {
-    progressFill.style.width = '60%';
-    progressText.textContent = 'Parsing forecast data...';
-
-    const res = await fetch(`${API_BASE}/api/upload-forecast`, { method: 'POST', body: formData });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Forecast upload failed' }));
-      throw new Error(err.detail || 'Forecast upload failed');
-    }
-
-    const data = await res.json();
-    progressFill.style.width = '100%';
-    progressText.textContent = 'Done!';
-
-    setTimeout(() => {
-      forecastProgress.style.display = 'none';
-      renderForecastSummary(data.data);
-    }, 500);
-
-  } catch (err) {
-    progressFill.style.width = '0%';
-    forecastProgress.style.display = 'none';
-    showToast(err.message, 'error');
-  }
-}
-
-function renderForecastSummary(data) {
-  const icon    = forecastUploadZone.querySelector('.upload-icon');
-  const text    = forecastUploadZone.querySelector('.upload-text');
-  const subtext = forecastUploadZone.querySelector('.upload-subtext');
-  if (icon)    icon.innerHTML = `
-    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
-    </svg>`;
-  if (text)    text.textContent = 'Forecast data loaded successfully';
-  if (subtext) subtext.textContent = 'Click or drop to use a different forecast file';
-  forecastUploadZone.style.borderColor = 'rgba(100, 255, 218, 0.3)';
-
-  forecastStatsGrid.innerHTML = [
-    { value: data.num_dates,    label: 'Schedule Days' },
-    { value: data.date_range,   label: 'Date Range' },
-    { value: data.avg_daily_demand, label: 'Avg Hourly Demand' },
-    { value: `${data.leave_requests_in_range} / ${data.leave_requests_total}`, label: 'Leave in Range' },
-  ].map(s => `
-    <div class="stat-card">
-      <div class="stat-value ${typeof s.value === 'string' && s.value.includes('to') ? 'stat-value-sm' : ''}">${s.value}</div>
-      <div class="stat-label">${s.label}</div>
-    </div>`).join('');
-
-  forecastSummary.style.display = 'block';
-  generateSection.style.display = 'block';
-  forecastSummary.scrollIntoView({ behavior: 'smooth', block: 'start' });
+function getDemandData() {
+  const data = {};
+  demandGrid.querySelectorAll('.demand-input').forEach(inp => {
+    const code = inp.dataset.shift;
+    const day  = parseInt(inp.dataset.day);
+    if (!data[code]) data[code] = [];
+    data[code][day] = parseInt(inp.value) || 0;
+  });
+  return data;
 }
 
 // ─── Generate Schedule ───
+
 async function generateSchedule() {
-  const timeLimit = parseInt(timeLimitSelect.value);
+  const agents    = getAgentsData();
+  const dates     = getScheduleDates();
+  const demands   = getDemandData();
+  const regsRaw   = regulationsInput ? regulationsInput.value.trim() : '';
+  const regs      = regsRaw ? regsRaw.split('\n').map(r => r.trim()).filter(Boolean) : [];
 
-  generateBtn.disabled = true;
-  solverProgress.style.display = 'flex';
+  const shiftCodes = DEFAULT_SHIFTS.map(s => ({ code: s.code, time: s.time }));
 
-  // Live elapsed-time counter
+  const setupPayload = {
+    agents,
+    shift_codes:  shiftCodes,
+    start_date:   startDateInput.value,
+    num_days:     dates.length,
+    demands,
+    regulations:  regs,
+
+  };
+
+  // Show overlay
+  solverProgressOverlay.style.display = 'block';
+  solverProgressText.textContent = 'CP-SAT solver is finding the optimal schedule';
+
   let elapsed = 0;
-  const progressText = solverProgress.querySelector('p');
-  if (progressText) progressText.textContent = 'CP-SAT solver is finding the optimal schedule';
-  solveTimerInterval = setInterval(() => {
+  state.solveTimerInterval = setInterval(() => {
     elapsed++;
-    if (progressText) progressText.textContent = `Running… ${elapsed}s / ${timeLimit}s`;
+    solverProgressText.textContent = `Running… ${elapsed}s`;
   }, 1000);
 
   try {
-    const res = await fetch(`${API_BASE}/api/generate?time_limit=${timeLimit}`, { method: 'POST' });
+    // Step 1: setup
+    const setupRes = await fetch(`${API_BASE}/api/setup`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(setupPayload),
+    });
+    if (!setupRes.ok) {
+      const err = await setupRes.json().catch(() => ({ detail: 'Setup failed' }));
+      throw new Error(err.detail || 'Setup failed');
+    }
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Generation failed' }));
+    // Step 2: generate
+    const genRes = await fetch(`${API_BASE}/api/generate?time_limit=60`, { method: 'POST' });
+    if (!genRes.ok) {
+      const err = await genRes.json().catch(() => ({ detail: 'Generation failed' }));
       throw new Error(err.detail || 'Generation failed');
     }
 
-    const results = await res.json();
-    clearInterval(solveTimerInterval);
-    solverProgress.style.display = 'none';
-    generateBtn.disabled = false;
+    const results = await genRes.json();
 
-    // Store shift codes for display
-    currentShiftCodes = results.shift_codes || {};
+    clearInterval(state.solveTimerInterval);
+    solverProgressOverlay.style.display = 'none';
+
+    state.currentShiftCodes = shiftCodes;
+    state.results = results;
 
     renderResults(results);
     showToast('Schedule generated successfully!', 'success');
 
   } catch (err) {
-    clearInterval(solveTimerInterval);
-    solverProgress.style.display = 'none';
-    generateBtn.disabled = false;
+    clearInterval(state.solveTimerInterval);
+    solverProgressOverlay.style.display = 'none';
     showToast(err.message, 'error');
   }
 }
 window.generateSchedule = generateSchedule;
 
 // ─── Results Rendering ───
+
 function renderResults(results) {
-  resultsSection.style.display = 'block';
+  demandSetupSection.style.display = 'none';
+  resultsSection.style.display     = 'block';
   exportBtn.disabled = false;
 
   renderSolverStats(results);
-  renderCoverageChart(results);
   renderScheduleGrid(results);
-  renderLegend(results);
 
   resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderSolverStats(results) {
   const statusClass = results.solve_status === 'OPTIMAL' ? 'optimal' : 'feasible';
+  const shiftCount  = Object.keys(state.currentShiftCodes).filter(k => !['OFF', 'Leave', 'Resign'].includes(k)).length;
   solverStats.innerHTML = `
-    <div class="solver-stat"><span class="label">Status</span><span class="value ${statusClass}">${results.solve_status}</span></div>
-    <div class="solver-stat"><span class="label">Solve Time</span><span class="value">${results.solve_time}s</span></div>
-    <div class="solver-stat"><span class="label">Agents</span><span class="value">${results.agents.length}</span></div>
-    <div class="solver-stat"><span class="label">Days</span><span class="value">${results.dates.length}</span></div>
-    <div class="solver-stat"><span class="label">Shifts</span><span class="value">${Object.keys(currentShiftCodes).filter(k => !['OFF','Leave','Resign'].includes(k)).length}</span></div>
+    <div class="solver-stat">
+      <span class="label">Status</span>
+      <span class="value ${statusClass}">${escapeHtml(results.solve_status || 'N/A')}</span>
+    </div>
+    <div class="solver-stat">
+      <span class="label">Solve Time</span>
+      <span class="value">${results.solve_time != null ? results.solve_time + 's' : '—'}</span>
+    </div>
+    <div class="solver-stat">
+      <span class="label">Agents</span>
+      <span class="value">${results.agents ? results.agents.length : '—'}</span>
+    </div>
+    <div class="solver-stat">
+      <span class="label">Days</span>
+      <span class="value">${results.dates ? results.dates.length : '—'}</span>
+    </div>
+    <div class="solver-stat">
+      <span class="label">Shift Codes</span>
+      <span class="value">${shiftCount}</span>
+    </div>
   `;
 }
 
-function renderLegend(results) {
-  const legend = document.getElementById('scheduleLegend');
-  if (!legend) return;
-
-  const periods = {};
-  for (const [code, info] of Object.entries(currentShiftCodes)) {
-    if (['OFF', 'Leave', 'Resign'].includes(code)) continue;
-    const p = info.period || 'morning';
-    if (!periods[p]) periods[p] = [];
-    periods[p].push(info.label || code);
-  }
-
-  const periodDot = { morning: 'dot-morning', afternoon: 'dot-afternoon', night: 'dot-evening' };
-  const periodLabel = { morning: 'Morning', afternoon: 'Afternoon', night: 'Night' };
-
-  let html = '';
-  for (const [p, labels] of Object.entries(periods)) {
-    const sample = labels.slice(0, 2).join(', ');
-    html += `<span class="legend-item"><span class="dot ${periodDot[p] || 'dot-morning'}"></span>${periodLabel[p] || p} (${sample}${labels.length > 2 ? '…' : ''})</span>`;
-  }
-  html += `<span class="legend-item"><span class="dot dot-off"></span>OFF</span>`;
-  html += `<span class="legend-item"><span class="dot dot-leave"></span>Leave/Resign</span>`;
-
-  legend.innerHTML = html;
-}
-
-function renderCoverageChart(results) {
-  const coverage = results.coverage;
-  if (!coverage) return;
-
-  const dates = results.dates;
-  const maxWorking = Math.max(...dates.map(d => coverage[d] ? coverage[d].total_working : 0), 1);
-
-  // Determine which periods appear
-  const periods = new Set();
-  for (const d of dates) {
-    const stats = coverage[d] || {};
-    for (const k of Object.keys(stats)) {
-      if (k.endsWith('_count') && !['off_count','leave_count'].includes(k)) {
-        periods.add(k.replace('_count', ''));
-      }
-    }
-  }
-
-  const periodColors = {
-    morning:   'linear-gradient(135deg, #1565c0, #42a5f5)',
-    afternoon: 'linear-gradient(135deg, #2e7d32, #66bb6a)',
-    night:     'linear-gradient(135deg, #e65100, #ff9800)',
-  };
-
-  let html = `<div class="chart-legend">`;
-  for (const p of periods) {
-    const col = periodColors[p] || periodColors.morning;
-    const lbl = { morning: 'Morning', afternoon: 'Afternoon', night: 'Night' }[p] || p;
-    html += `<span class="chart-legend-item"><span class="chart-legend-dot" style="background:${col}"></span>${lbl}</span>`;
-  }
-  html += `</div><div class="coverage-chart">`;
-
-  const barScale = 300;
-  for (const date of dates) {
-    const stats   = coverage[date] || { total_working: 0, forecast_demand: 0 };
-    const totalW  = stats.total_working || 0;
-    const demand  = stats.forecast_demand || 0;
-    const d       = new Date(date);
-    const dayNames= ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    const shortDate = `${dayNames[d.getDay()]} ${d.getDate()}`;
-
-    html += `<div class="chart-row">
-      <span class="chart-label">${shortDate}</span>
-      <div class="chart-bars">`;
-
-    for (const p of periods) {
-      const cnt = stats[`${p}_count`] || 0;
-      const w   = Math.max(Math.round((cnt / maxWorking) * barScale), 2);
-      const col = periodColors[p] || periodColors.morning;
-      html += `<div class="chart-bar" style="width:${w}px;background:${col}" title="${p}: ${cnt}">
-        <span class="chart-bar-value">${cnt}</span></div>`;
-    }
-
-    html += `</div><span class="chart-total">${totalW} / ${demand}</span></div>`;
-  }
-
-  html += '</div>';
-  coverageChart.innerHTML = html;
-}
-
 function renderScheduleGrid(results) {
-  const { agents, dates } = results;
+  const { agents, dates, coverage, shift_demand } = results;
+  if (!agents || !dates) return;
 
-  let thead = '<thead><tr><th class="sticky-col">Agent</th>';
+  const DAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+  // ── Header row ──
+  let thead = `<thead><tr>
+    <th class="col-sticky col-no">No</th>
+    <th class="col-sticky col-name">Name</th>
+    <th class="col-sticky col-skill">Skill</th>
+    <th class="col-sticky col-channel">Channel</th>
+    <th class="col-sticky col-site">Site</th>
+    <th class="col-sticky col-gender">Gender</th>`;
+
   for (const date of dates) {
-    const d = new Date(date);
-    const dayNames = ['Su','Mo','Tu','We','Th','Fr','Sa'];
-    thead += `<th>${dayNames[d.getDay()]}<br>${d.getDate()}</th>`;
+    const d   = new Date(date + 'T00:00:00');
+    const dow = DAY_NAMES[d.getDay()];
+    const dom = d.getDate();
+    thead += `<th class="col-day">${dow}<br><span class="day-num">${dom}</span></th>`;
   }
   thead += '</tr></thead>';
 
+  // ── Agent rows ──
   let tbody = '<tbody>';
-  for (const agent of agents) {
-    tbody += `<tr><td class="sticky-col">${escapeHtml(agent.name)}</td>`;
+  for (let i = 0; i < agents.length; i++) {
+    const agent = agents[i];
+    tbody += `<tr>
+      <td class="col-sticky col-no">${i + 1}</td>
+      <td class="col-sticky col-name">${escapeHtml(agent.name || '')}</td>
+      <td class="col-sticky col-skill">${escapeHtml(agent.skill || '')}</td>
+      <td class="col-sticky col-channel">${escapeHtml(agent.channel || '')}</td>
+      <td class="col-sticky col-site">${escapeHtml(agent.site || '')}</td>
+      <td class="col-sticky col-gender">${escapeHtml(agent.gender || '')}</td>`;
+
     for (const date of dates) {
-      const shift = agent.schedule[date] || 'OFF';
-      tbody += `<td class="${getShiftCellClass(shift)}">${getShiftDisplay(shift)}</td>`;
+      const shift = (agent.schedule && agent.schedule[date]) ? agent.schedule[date] : 'OFF';
+      tbody += `<td class="${getShiftCellClass(shift)}">${escapeHtml(getShiftDisplay(shift))}</td>`;
     }
     tbody += '</tr>';
   }
+
+  // ── Summary rows ──
+  const summaryRows = [
+    { id: 'demand',    label: 'Demand',    cls: 'summary-demand' },
+    { id: 'scheduled', label: 'Scheduled', cls: 'summary-scheduled' },
+    { id: 'gap',       label: 'GAP',       cls: 'summary-gap' },
+    { id: 'off',       label: 'Off',       cls: 'summary-off' },
+  ];
+
+  for (const row of summaryRows) {
+    tbody += `<tr class="summary-row">
+      <td class="col-sticky col-no summary-row-label" colspan="6">${escapeHtml(row.label)}</td>`;
+    for (const date of dates) {
+      const cov = (coverage && coverage[date]) ? coverage[date] : {};
+      let val = '—';
+      let extraCls = row.cls;
+
+      if (row.id === 'demand') {
+        // Sum all shift demands for this date index
+        const dayIdx = dates.indexOf(date);
+        let total = 0;
+        if (shift_demand) {
+          for (const arr of Object.values(shift_demand)) {
+            if (Array.isArray(arr) && arr[dayIdx] != null) total += arr[dayIdx];
+          }
+        } else if (cov.demand_total != null) {
+          total = cov.demand_total;
+        }
+        val = total;
+      } else if (row.id === 'scheduled') {
+        val = cov.total_working != null ? cov.total_working : '—';
+      } else if (row.id === 'gap') {
+        const g = cov.gap;
+        val = g != null ? g : '—';
+        if (typeof g === 'number' && g < 0) extraCls += ' cell-gap-neg';
+      } else if (row.id === 'off') {
+        val = cov.off_count != null ? cov.off_count : '—';
+      }
+
+      tbody += `<td class="${extraCls}">${val}</td>`;
+    }
+    tbody += '</tr>';
+  }
+
   tbody += '</tbody>';
 
-  scheduleTable.innerHTML = thead + tbody;
+  resultsTable.innerHTML = thead + tbody;
 }
 
-// ─── Shift display helpers (now period-aware via currentShiftCodes) ───
-
-function getShiftPeriod(displayValue) {
-  // displayValue is the start time like "08:00" — look up in currentShiftCodes
-  for (const [code, info] of Object.entries(currentShiftCodes)) {
-    if (info.time === displayValue || info.label === displayValue) {
-      return info.period || 'morning';
-    }
-  }
-  // Fallback: infer from hour
-  if (/^\d{2}:\d{2}$/.test(displayValue)) {
-    const h = parseInt(displayValue.split(':')[0]);
-    if (h >= 6  && h < 12) return 'morning';
-    if (h >= 12 && h < 18) return 'afternoon';
-    return 'night';
-  }
-  return 'morning';
-}
+// ─── Shift helpers ───
 
 function getShiftCellClass(shift) {
-  if (shift === 'OFF')    return 'cell-off';
-  if (shift === 'Leave' || shift === 'Resign') return 'cell-leave';
+  if (!shift || shift === 'OFF')                    return 'cell-off';
+  if (shift === 'Leave' || shift === 'LV')          return 'cell-leave';
+  if (shift === 'Resign' || shift === 'RS')         return 'cell-leave';
 
-  const period = getShiftPeriod(shift);
+  const info = state.currentShiftCodes[shift];
+  const period = info ? info.period : inferPeriodFromCode(shift);
   if (period === 'morning')   return 'cell-morning';
   if (period === 'afternoon') return 'cell-afternoon';
-  return 'cell-evening';
+  if (period === 'night')     return 'cell-evening';
+  return 'cell-morning';
+}
+
+function inferPeriodFromCode(code) {
+  const found = DEFAULT_SHIFTS.find(s => s.code === code);
+  return found ? found.period : 'morning';
 }
 
 function getShiftDisplay(shift) {
-  if (shift === 'OFF')    return 'OFF';
-  if (shift === 'Leave')  return 'LV';
-  if (shift === 'Resign') return 'RS';
-
-  // Show hour portion only (e.g. "08:00" → "08")
-  if (/^\d{2}:\d{2}$/.test(shift)) return shift.slice(0, 2);
+  if (!shift || shift === 'OFF')           return 'OFF';
+  if (shift === 'Leave' || shift === 'LV') return 'LV';
+  if (shift === 'Resign' || shift === 'RS')return 'RS';
   return shift;
 }
 
@@ -435,9 +469,12 @@ async function exportSchedule() {
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    a.href = url; a.download = 'WFM_Generated_Schedule.xlsx';
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a); URL.revokeObjectURL(url);
+    a.href = url;
+    a.download = 'WFM_Generated_Schedule.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
     showToast('Schedule exported!', 'success');
   } catch (err) {
     showToast(err.message, 'error');
@@ -447,58 +484,50 @@ window.exportSchedule = exportSchedule;
 
 // ─── Reset / Start Over ───
 function resetApp() {
-  // Hide result sections
-  dataSummary.style.display     = 'none';
-  forecastSection.style.display = 'none';
-  forecastSummary.style.display = 'none';
-  generateSection.style.display = 'none';
-  resultsSection.style.display  = 'none';
+  // Clear results
+  state.results           = null;
+  state.currentShiftCodes = {};
+  exportBtn.disabled      = true;
+  resetBtn.style.display  = 'none';
 
-  // Re-enable upload zones
-  uploadZone.style.borderColor = '';
-  forecastUploadZone.style.borderColor = '';
+  // Clear agent table
+  agentsTableBody.innerHTML = '';
+  updateAgentCount();
 
-  // Reset upload zone appearance
-  const uploadIcon    = uploadZone.querySelector('.upload-icon');
-  const uploadText    = uploadZone.querySelector('.upload-text');
-  const uploadSubtext = uploadZone.querySelector('.upload-subtext');
-  if (uploadIcon) uploadIcon.innerHTML = `
-    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-      <polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/>
-      <polyline points="9 15 12 12 15 15"/>
-    </svg>`;
-  if (uploadText)    uploadText.textContent    = 'Drag & drop your Excel file here';
-  if (uploadSubtext) uploadSubtext.textContent = 'or click to browse • .xlsx format';
+  // Hide all steps except Step 1
+  demandSetupSection.style.display    = 'none';
+  solverProgressOverlay.style.display = 'none';
+  resultsSection.style.display        = 'none';
+  agentSetupSection.style.display     = 'block';
 
-  // Reset forecast upload zone
-  const fIcon    = forecastUploadZone.querySelector('.upload-icon');
-  const fText    = forecastUploadZone.querySelector('.upload-text');
-  const fSubtext = forecastUploadZone.querySelector('.upload-subtext');
-  if (fIcon) fIcon.innerHTML = `
-    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <path d="M3 3v18h18"/><path d="M18 9l-5 5-2-2-4 4"/><circle cx="18" cy="9" r="1"/>
-    </svg>`;
-  if (fText)    fText.textContent    = 'Drop your Simulation Schedule file here';
-  if (fSubtext) fSubtext.textContent = 'or click to browse • .xlsx format';
+  // Reset demand grid date
+  startDateInput.value = formatDateISO(new Date());
+  numDaysSelect.value  = '14';
 
-  // Reset buttons & state
-  exportBtn.disabled       = true;
-  generateBtn.disabled     = false;
-  resetBtn.style.display   = 'none';
-  currentShiftCodes        = {};
-  fileInput.value          = '';
-  forecastFileInput.value  = '';
+  // Re-add sample agents
+  addAgentRow({ nip: 'EMP001', name: 'Siti Rahayu',  skill: 'Bahasa',  channel: 'Call',         site: 'Jakarta',  gender: 'P', religion: 'Islam' });
+  addAgentRow({ nip: 'EMP002', name: 'Budi Santoso', skill: 'English', channel: 'Chat',         site: 'Semarang', gender: 'L', religion: 'Islam' });
+  addAgentRow({ nip: 'EMP003', name: 'Dewi Lestari', skill: 'Bahasa',  channel: 'Social Media', site: 'Surabaya', gender: 'P', religion: 'Kristen' });
 
-  uploadSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  buildDemandGrid();
+
+  agentSetupSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
   showToast('Ready for a new session', 'success');
 }
 window.resetApp = resetApp;
 
 // ─── Utilities ───
+
+function formatDateISO(date) {
+  const y  = date.getFullYear();
+  const m  = String(date.getMonth() + 1).padStart(2, '0');
+  const d  = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function escapeHtml(text) {
   const div = document.createElement('div');
-  div.textContent = text;
+  div.textContent = String(text);
   return div.innerHTML;
 }
 
@@ -509,7 +538,7 @@ function showToast(message, type = 'error') {
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => {
-    toast.style.opacity = '0';
+    toast.style.opacity   = '0';
     toast.style.transform = 'translateY(20px)';
     toast.style.transition = '0.3s ease';
     setTimeout(() => toast.remove(), 300);

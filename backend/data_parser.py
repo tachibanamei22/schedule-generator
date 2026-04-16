@@ -14,6 +14,9 @@ class Agent:
     role: str
     channel: str
     gender: str  # "M" or "F"
+    skill: str = ""      # e.g., "Bahasa", "English"
+    site: str = ""       # e.g., "Jakarta", "Semarang"
+    religion: str = ""   # e.g., "Islam", "Kristen"
 
 
 @dataclass
@@ -89,6 +92,8 @@ class WFMData:
     forecast: ForecastData
     dates: List[str]  # list of date strings for the scheduling period
     regulations: List[str]
+    shift_demand: Dict[str, List[int]] = field(default_factory=dict)
+    # e.g., {"P1": [2, 2, 1, ...], "P2": [2, 2, 2, ...]}  — one int per day
 
 
 def parse_time_interval(interval_str: str) -> Tuple[Optional[time], Optional[time]]:
@@ -474,10 +479,10 @@ def load_forecast_data(filepath: str, dates: List[str]) -> ForecastData:
         for date_str in dates:
             if date_str not in forecast.requirements:
                 forecast.requirements[date_str] = {h: 0 for h in range(24)}
-        
+
         print(f"Loaded forecast: {num_days_to_map} days mapped, "
               f"{dates[0]} to {dates[num_days_to_map-1]}")
-    
+
     except Exception as e:
         print(f"Warning: Could not parse Data Forecast sheet: {e}")
         # Fallback to default demand profile
@@ -487,7 +492,7 @@ def load_forecast_data(filepath: str, dates: List[str]) -> ForecastData:
             12: 15, 13: 17, 14: 18, 15: 17, 16: 15, 17: 12,
             18: 10, 19: 9, 20: 9, 21: 8, 22: 6, 23: 5
         }
-        
+
         for date_str in dates:
             forecast.requirements[date_str] = {}
             try:
@@ -495,11 +500,92 @@ def load_forecast_data(filepath: str, dates: List[str]) -> ForecastData:
                 is_weekend = dt.weekday() >= 5
             except:
                 is_weekend = False
-            
+
             for hour in range(24):
                 demand = base_demand[hour]
                 if is_weekend:
                     demand = max(2, int(demand * 0.8))
                 forecast.requirements[date_str][hour] = demand
-    
+
     return forecast
+
+
+def build_shift_codes_from_list(shift_list: list) -> Dict[str, ShiftCode]:
+    """Build ShiftCode dict from a list of {code, time} dicts (from frontend form)."""
+    shifts = {}
+    for item in shift_list:
+        code = str(item.get('code', '')).strip()
+        time_str = str(item.get('time', '')).strip()
+        if not code:
+            continue
+        start_t, end_t = parse_time_interval(time_str) if time_str else (None, None)
+        shifts[code] = ShiftCode(code=code, start_time=start_t, end_time=end_t)
+    # Always ensure OFF is present
+    if 'OFF' not in shifts:
+        shifts['OFF'] = ShiftCode(code='OFF', start_time=None, end_time=None)
+    shifts['Leave']  = ShiftCode(code='Leave',  start_time=None, end_time=None, is_leave=True, leave_type='Leave')
+    shifts['Resign'] = ShiftCode(code='Resign', start_time=None, end_time=None, is_leave=True, leave_type='Resign')
+    return shifts
+
+
+def build_wfm_from_form_data(data: dict) -> 'WFMData':
+    """
+    Build a WFMData object from JSON form submission (no Excel required).
+
+    Expected `data` shape:
+    {
+      "agents": [{"id", "name", "skill", "channel", "site", "gender", "religion"}, ...],
+      "shift_codes": [{"code": "P1", "time": "06:00-15:00"}, ...],
+      "start_date": "2025-05-01",
+      "num_days": 28,
+      "demands": {"P1": [2, 2, ...], "P2": [2, 2, ...], ...},
+      "regulations": ["rule text 1", ...]
+    }
+    """
+    from datetime import datetime, timedelta
+
+    # Build agents
+    agents = []
+    for i, a in enumerate(data.get('agents', []), 1):
+        agents.append(Agent(
+            id=str(a.get('id') or i),
+            name=str(a.get('name', f'Agent {i}')),
+            role=str(a.get('skill', 'Agent')),   # use skill as role for solver compat
+            channel=str(a.get('channel', '')),
+            gender=_normalize_gender(a.get('gender', 'M')),
+            skill=str(a.get('skill', '')),
+            site=str(a.get('site', '')),
+            religion=str(a.get('religion', '')),
+        ))
+
+    # Build shift codes
+    shift_list = data.get('shift_codes', [])
+    shift_codes = build_shift_codes_from_list(shift_list)
+
+    # Generate date list
+    start_date_str = data.get('start_date', '')
+    num_days = int(data.get('num_days', 28))
+    try:
+        start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+    except Exception:
+        start_dt = datetime.today().replace(day=1)
+    dates = [(start_dt + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(num_days)]
+
+    # Shift demand: {"P1": [2,2,...], ...}  — values for each day
+    raw_demands = data.get('demands', {})
+    shift_demand: Dict[str, List[int]] = {}
+    for code, vals in raw_demands.items():
+        if isinstance(vals, list):
+            shift_demand[code] = [int(v or 0) for v in vals]
+
+    regulations = [str(r) for r in data.get('regulations', []) if r]
+
+    return WFMData(
+        agents=agents,
+        shift_codes=shift_codes,
+        leave_requests=[],
+        forecast=ForecastData(),   # empty — solver will use shift_demand instead
+        dates=dates,
+        regulations=regulations,
+        shift_demand=shift_demand,
+    )

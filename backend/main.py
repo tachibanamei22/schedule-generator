@@ -165,7 +165,7 @@ async def upload_forecast(file: UploadFile = File(...)):
 async def generate_schedule(time_limit: int = 60):
     """Generate an optimized schedule using CP-SAT solver."""
     if app_state["wfm_data"] is None:
-        raise HTTPException(400, "Please upload a WFM data file first")
+        raise HTTPException(400, "No schedule data configured. Please set up agents and demand first.")
     
     try:
         solver = ScheduleSolver(app_state["wfm_data"])
@@ -189,6 +189,33 @@ async def generate_schedule(time_limit: int = 60):
         raise
     except Exception as e:
         raise HTTPException(500, f"Error generating schedule: {str(e)}")
+
+
+@app.post("/api/setup")
+async def setup_schedule(data: dict):
+    """Configure agents and shift demand from the form-based UI (no Excel required)."""
+    from data_parser import build_wfm_from_form_data
+    try:
+        wfm_data = build_wfm_from_form_data(data)
+        if not wfm_data.agents:
+            raise HTTPException(400, "No agents provided")
+        if not wfm_data.dates:
+            raise HTTPException(400, "Invalid date range")
+
+        app_state["wfm_data"] = wfm_data
+        app_state["results"]   = None
+        app_state["forecast_uploaded"] = True  # mark ready to generate
+
+        return {
+            "status": "ok",
+            "agents": len(wfm_data.agents),
+            "days":   len(wfm_data.dates),
+            "dates":  wfm_data.dates,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Setup error: {str(e)}")
 
 
 @app.get("/api/download-template")
