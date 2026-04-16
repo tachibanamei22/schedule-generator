@@ -1,7 +1,7 @@
 """
 LLM-powered regulation parser.
 
-Takes regulation text from the Excel file and uses GPT to parse it into
+Takes regulation text from the form and uses Claude to parse it into
 structured constraint definitions that the CP-SAT solver can enforce.
 """
 import os
@@ -20,7 +20,7 @@ class ParsedRule:
     reason: str = ""  # Why it's not enforceable, if applicable
 
 
-# Supported constraint types and their descriptions (used in GPT prompt)
+# Supported constraint types and their descriptions (used in Claude prompt)
 SUPPORTED_TYPES = {
     "max_consecutive_work_days": {
         "description": "Limit the maximum number of consecutive working days",
@@ -62,7 +62,7 @@ SUPPORTED_TYPES = {
 
 
 def _build_system_prompt() -> str:
-    """Build the system prompt for GPT with supported constraint types."""
+    """Build the system prompt for Claude with supported constraint types."""
     types_desc = json.dumps(SUPPORTED_TYPES, indent=2)
     return f"""You are a workforce management regulation parser. Your job is to analyze 
 regulation text and map each one to a structured constraint type.
@@ -81,56 +81,62 @@ IMPORTANT RULES:
 1. Extract numeric values from the text (e.g., "Max 6 consecutive" → limit: 6)
 2. If a regulation is vague or doesn't match any type, set enforceable to false
 3. One regulation text may map to one constraint type
-4. Return ONLY valid JSON, no markdown or explanation
+4. Return ONLY valid JSON array (no markdown code fences, no explanation, no wrapper object)
 5. Be precise with parameter values — use exact types (integers for limits, strings for categories)"""
 
 
 def parse_regulations_with_llm(regulations: List[str]) -> List[ParsedRule]:
     """
-    Parse regulation texts using GPT API.
-    
+    Parse regulation texts using Claude API.
+
     Falls back to default rules if API key is missing or call fails.
     """
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    
-    if not api_key or api_key == "sk-your-key-here":
-        print("No OpenAI API key found, using default hardcoded rules")
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    if not api_key:
+        print("No Anthropic API key found, using default hardcoded rules")
         return _get_default_rules()
-    
+
     if not regulations:
         print("No regulations provided, using defaults")
         return _get_default_rules()
-    
+
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-        
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+
         user_message = "Parse these regulations into constraint definitions:\n\n"
         for i, reg in enumerate(regulations, 1):
             user_message += f"{i}. {reg}\n"
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+
+        response = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=1024,
+            system=_build_system_prompt(),
             messages=[
-                {"role": "system", "content": _build_system_prompt()},
                 {"role": "user", "content": user_message}
-            ],
-            temperature=0,
-            response_format={"type": "json_object"}
+            ]
         )
-        
-        result_text = response.choices[0].message.content
+
+        result_text = response.content[0].text.strip()
+
+        # Strip any accidental markdown code fences
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+
         result_data = json.loads(result_text)
-        
+
         # Handle both {"rules": [...]} and direct [...] formats
         if isinstance(result_data, dict):
             rules_list = result_data.get("rules", result_data.get("regulations", []))
         elif isinstance(result_data, list):
             rules_list = result_data
         else:
-            print(f"Unexpected GPT response format: {type(result_data)}")
+            print(f"Unexpected Claude response format: {type(result_data)}")
             return _get_default_rules()
-        
+
         parsed_rules = []
         for rule_data in rules_list:
             parsed_rules.append(ParsedRule(
@@ -140,19 +146,19 @@ def parse_regulations_with_llm(regulations: List[str]) -> List[ParsedRule]:
                 enforceable=rule_data.get("enforceable", False),
                 reason=rule_data.get("reason", "")
             ))
-        
+
         if not parsed_rules:
-            print("GPT returned no rules, using defaults")
+            print("Claude returned no rules, using defaults")
             return _get_default_rules()
-        
-        print(f"GPT parsed {len(parsed_rules)} regulations: "
+
+        print(f"Claude parsed {len(parsed_rules)} regulations: "
               f"{sum(1 for r in parsed_rules if r.enforceable)} enforceable, "
               f"{sum(1 for r in parsed_rules if not r.enforceable)} display-only")
-        
+
         return parsed_rules
-        
+
     except Exception as e:
-        print(f"GPT regulation parsing failed: {e}")
+        print(f"Claude regulation parsing failed: {e}")
         print("Falling back to default hardcoded rules")
         return _get_default_rules()
 
